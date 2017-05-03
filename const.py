@@ -1,0 +1,5 @@
+TARGET = 0
+SOURCE = 1
+OP = 2
+MODE = 3
+PROG_LENGTH = 48

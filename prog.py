@@ -4,15 +4,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 import pdb
 
-
-
 #input
 num_genregs = 8
 num_ops = 4
-#num_ipregs = 4
-#output_dims = 3    # from classes
-pop_size = 100
-generations = 10
+pop_size = 250
+generations = 1000
 
 data_files = ['data/iris.data', 'data/tic-tac-toe.data']
 data_file = data_files[0]
@@ -97,18 +93,28 @@ def get_classes(data):
 
 # Results
 def get_fitness_results(pop, X, y, v, fitness_eval):
-    results=[]
-    for indiv in pop:
-        y_pred = []
-        for ex in X:
-            output = v.run_prog(indiv, ex)
-            y_pred.append(output.index(max(output)))
-        results.append(fitness_eval(y, y_pred))
+    results = [fitness_eval(y, y_pred) for y_pred in [predicted_classes(prog, X, v) for prog in pop]]
     return results
+
+def predicted_classes(prog, X, v):
+    y_pred = []
+    for ex in X:
+        output = v.run_prog(prog, ex)
+        y_pred.append(output.index(max(output)))
+    return y_pred
 
 # Fitness evaluation functions
 def accuracy(y, y_pred):
     return accuracy_score(y, y_pred)
+
+def mse_ce(y, y_pred):
+    total = 0
+    n = len(y)
+    ce =len([1 for i in range(len(y_pred)) if y_pred[i] != y[i]])/n
+    mse = sum([1 for i in range(len(y_pred)) if y_pred[i] != y[i]])*(1/n*3)
+    #mse=0
+    #ce = len([1 for i in range(len(y_pred)) if y_pred[i] != y[i]])
+    return -(mse+ce)
 
 # Variation operators
 def reproduction(progs):
@@ -144,7 +150,7 @@ def mutation(progs):
         children.append(prog)
     return children
 
-def tournament(X, y, v, pop, fitness_eval=accuracy, var_op_probs=[0.5,0.5]):
+def tournament(X, y, v, pop, fitness_eval=accuracy, var_op_probs=[0.1,0.9]):
     indivs = set()
     while len(indivs) < const.TOURNAMENT_SIZE:
         indivs.add(random.randint(0, len(pop)-1))
@@ -214,15 +220,17 @@ def run_model(X, y, v, pop, selection, generations, fitness_eval=accuracy):
     return results
 
 def get_average_fitness(X, y, v, pop, selection, generations, num_trials, fitness_eval=accuracy):
-    max_fitness = []
-    mean_fitness = []
+    max_fitness , mean_fitness, test_fitness = [], [], []
+    X_train, X_test, y_train, y_test = X[0], X[1], y[0], y[1]
     for i in range(num_trials):
-        results = run_model(X, y, v, pop, selection, generations, fitness_eval)
+        results = run_model(X_train, y_train, v, pop, selection, generations, fitness_eval)
         max_fitness.append(max(results))
         mean_fitness.append(np.mean(results))
-    avg_max, avg_mean = np.mean(max_fitness), np.mean(mean_fitness)
-    print('Trials: {}\nAverage max fitness: {}\nAverage mean fitness: {}\n'.format(num_trials, avg_max, avg_mean))
-    return avg_max, avg_mean
+        test_fitness.append(run_top_prog(results, X_test, y_test, v, pop))
+        pop = gen_population(pop_size, num_ipregs)
+    avg_max, avg_mean, avg_test = np.mean(max_fitness), np.mean(mean_fitness), np.mean(test_fitness)
+    print('Trials: {}\nAverage max fitness: {}\nAverage mean fitness: {}\nAverage test fitness: {}\n'.format(num_trials, avg_max, avg_mean, avg_test))
+    return avg_max, avg_mean, avg_test
 
 def get_ranked_index(results):
     return [x[0] for x in sorted(enumerate(results), key=lambda i:i[1])]
@@ -231,9 +239,15 @@ def run_top_prog(results, X, y, v, pop, fitness_eval=accuracy):
     top_prog = pop[get_ranked_index(results)[-1]]
     results = get_fitness_results([top_prog], X, y, v, fitness_eval)
     print('Fitness on test data: {}'.format(results[0]))
-    return results
+    all_results = get_fitness_results(pop, X, y, v, fitness_eval)
+    top_result = max(all_results)
+    top_result_i = all_results.index(max(all_results))
+    pop_score= get_fitness_results([pop[top_result_i]], X_train, y_train, v, fitness_eval)
+    print('Top fitness on test data: {} \nScore on orig data: {}'.format(top_result, pop_score))
+    return results[0]
 
 var_ops = [recombination, mutation, reproduction]
+fitness_eval = accuracy
 
 data = load_data(data_file)
 X, y = preprocess([ex[:len(ex)-1] for ex in data]), [ex[-1:len(ex)][0] for ex in data]
@@ -249,10 +263,16 @@ v = vm.Vm(num_genregs, num_ipregs, num_ops, output_dims)
 X_train, val0, val1 = standardize(X_train, standardize_method, alpha=alpha)
 X_test = standardize(X_test, standardize_method, alpha=alpha, vals=[val0, val1])[0]
 
+X_valid, X_test, y_valid, y_test = train_test_split(X_test, y_test, test_size=0.2, stratify=y_test)
+#run_model(X_train, y_train, v, pop, selection, generations)
+# results = get_fitness_results(pop, X_valid, y_valid, v, fitness_eval=fitness_eval)
+# run_top_prog(results, X_test, y_test, v, pop)
+
+
 print('Population size: {}\nGenerations: {}\nData: {}\nSelection Replacement: {}\nAlpha: {}\n'.format(pop_size, generations, data_file, selection.name, alpha))
-results = run_model(X_train, y_train, v, pop, selection, generations)
+#results = run_model(X_train, y_train, v, pop, selection, generations)
 
-# trials = 5
-# get_average_fitness(X_train, y_train, v, pop, selection, generations, trials)
+trials = 2
+get_average_fitness([X_train, X_test], [y_train, y_test], v, pop, selection, generations, trials, fitness_eval=fitness_eval)
 
-run_top_prog(results, X_test, y_test, v, pop)
+#run_top_prog(results, X_test, y_test, v, pop)

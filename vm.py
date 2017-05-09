@@ -13,7 +13,7 @@ class Vm:
             0: (lambda x:self.gen_regs[x % self.num_genregs]),
             1: (lambda x:self.ip_regs[x % self.num_ipregs])
         }
-    @profile
+
     def run_prog(self, prog, ip, remove_introns=True):
         self.prog_len = len(prog[0])
         self.ip_regs = [float(x) for x in ip]
@@ -24,6 +24,7 @@ class Vm:
         effective_instrs = self.find_introns(target_col, source_col, mode_col) if remove_introns else range(self.prog_len)
 
         for i in sorted(effective_instrs):
+            #pdb.set_trace()
             target_ind = target_col[i]
             source = self.mode[mode_col[i]](source_col[i])
             self.gen_regs[target_ind] = do_op(op_col[i], self.gen_regs[target_ind], source)
@@ -36,15 +37,15 @@ class Vm:
         self.gen_regs = [0]*self.num_genregs
 
     # Return set w/ indices of effective instructions
-    @profile
     def find_introns(self, target, source, mode):
         marked_instrs = set()
         eff_regs = set(range(self.output_dims))
-        instrs = reversed(range(self.prog_len-1))
+        instrs = reversed(range(self.prog_len))
         for i in instrs:
-            if target[i] in eff_regs and mode[i] == 0:
+            if target[i] in eff_regs:
                 marked_instrs.add(i)
-                eff_regs.add(source[i] % self.num_genregs)
+                if mode[i] == 0:
+                    eff_regs.add(source[i] % self.num_genregs)
         return marked_instrs
 
 

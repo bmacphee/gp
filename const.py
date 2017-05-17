@@ -8,6 +8,9 @@ PROG_LENGTH = 48
 TOURNAMENT_SIZE = 4
 GEN_REGS = 8
 
+TEST_DATA_FILES = { 'data/ann-train.data': 'data/ann-test.data',
+                    'data/shuttle.trn': 'data/shuttle.tst' }
+
 class StandardizeMethod(Enum):
     MEAN_VARIANCE = 0
     LINEAR_TRANSFORM = 1

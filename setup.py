@@ -7,6 +7,9 @@ import numpy
 setup(
     ext_modules = cythonize("vm.pyx", compiler_directives={
         'language_level': 3,
+        'cdivision': True,
+        'boundscheck': False,
+        'wraparound': False
     }),
     include_dirs=[numpy.get_include()],
 

@@ -11,6 +11,14 @@ GEN_REGS = 8
 TEST_DATA_FILES = { 'data/ann-train.data': 'data/ann-test.data',
                     'data/shuttle.trn': 'data/shuttle.tst' }
 
+# Not used yet
+#VAR_OPS = [gp.recombination, gp.mutation]
+
+class FitnessEval(Enum):
+    ACCURACY = 'accuracy'
+    FITNESS_SHARING = 'fitness_sharing'
+    AVG_DETECT_RATE = 'avg_detect_rate'
+
 class StandardizeMethod(Enum):
     MEAN_VARIANCE = 0
     LINEAR_TRANSFORM = 1

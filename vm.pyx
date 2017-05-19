@@ -1,24 +1,113 @@
+
 import const
 import numpy as np
 cimport numpy as np
 from cpython cimport array
 import array
-from libc.math cimport sqrt
+#from libc.math cimport sqrt
+cimport cython
+from libc.stdlib cimport malloc, free
+from cpython cimport array
+from libc.stdio cimport printf
 
-default_val = float(1)
-num_genregs = 0
-num_ipregs = 0
-num_ops = 0
-output_dims = 0
-prog_len = const.PROG_LENGTH
+cdef extern from "math.h":
+    float sqrt(float) nogil
 
-def run_prog(prog, list ip):
-    return runprog(prog, ip)
+# cpdef class Prog:
+#     def __init__(self, prog):
+#         self.prog = prog
+#         self.effective_instrs = None
+#         self.fitness = None
+#         self.acc_fitness = None
+#         self.train_y_pred = None
 
-cdef list runprog(prog, list ip):
-    cdef list ip_regs = [float(x) for x in ip]
-    cdef list gen_regs = [default_val]*num_genregs
+# default_val = float(1)
+# cdef int num_genregs = 0
+# cdef int num_ipregs = 0
+# cdef int num_ops = 0
+# cdef int output_dims = 0
+# cdef int prog_len = const.PROG_LENGTH
+# test = num_genregs
+cdef class Vm(object):
+    cdef public int num_genregs, num_ipregs, num_ops, output_dims
+    cdef int prog_len
+    cdef float default_val
 
+    def __init__(self, num_genregs, num_ipregs, output_dims):
+        self.num_genregs = num_genregs
+        self.num_ipregs = num_ipregs
+        self.output_dims = output_dims
+
+
+cdef double default_val = 1
+cdef int num_genregs = 8
+cdef int num_ipregs
+cdef int num_ops
+cdef int output_dims
+cdef int prog_len = const.PROG_LENGTH
+
+def get_vals():
+    return num_genregs, num_ipregs, num_ops, output_dims
+
+cpdef void init(int genregs, int ipregs, int ops, int outdims):
+    global num_genregs, num_ipregs, num_ops, output_dims
+
+    num_genregs = genregs
+    num_ipregs = ipregs
+    num_ops = ops
+    output_dims = outdims
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.locals(target_col=cython.int[48], source_col=cython.int[48], mode_col=cython.int[48], op_col=cython.int[48])
+cpdef list run_prog(prog, array.array[double] ip):
+    global num_genregs, num_ipregs, prog_len
+
+    # cdef int[48] target_col = array.array('i', prog.prog[const.TARGET])
+    # cdef int[48] source_col = array.array('i', prog.prog[const.SOURCE])
+    # cdef int[48] mode_col = array.array('i', prog.prog[const.MODE])
+    # cdef int[48] op_col = array.array('i', prog.prog[const.OP])
+    target_col = prog.prog[const.TARGET]
+    source_col = prog.prog[const.SOURCE]
+    mode_col = prog.prog[const.MODE]
+    op_col = prog.prog[const.OP]
+
+    if prog.effective_instrs is None:
+        prog.effective_instrs = find_introns(target_col, source_col, mode_col)
+
+    cdef int s = len(prog.effective_instrs)
+    cdef int* effective_instrs = <int*> malloc(sizeof(int)*s)
+    cdef int i
+    for i in range(s):
+        effective_instrs[i] = prog.effective_instrs[i]
+
+    cdef int ip_len = len(ip)
+    cdef double* ip_
+    cdef double* output
+    with nogil:
+        ip_ = <double*> malloc(sizeof(double)*ip_len)
+        for i in range(ip_len):
+            ip_[i] = ip[i]
+        output = runprog(s, effective_instrs, target_col, source_col, mode_col, op_col, ip_)
+        free(effective_instrs)
+        free(ip_)
+    # for i in range(8):
+    #     printf('%f\t',  output[i])
+    # printf('\n')
+    out = [output[x] for x in range(output_dims)]
+
+    free(output)
+    return out
+
+@cython.cdivision(True)
+cdef double* runprog(int length, int[] effective_instrs, int[] target_col, int[] source_col, int[] mode_col, int[] op_col, double[] ip) nogil:
+    global num_genregs, default_val
+
+    cdef int i
+    #cdef double[8] gen_regs
+    cdef double* gen_regs = <double*> malloc(sizeof(double)*num_genregs)
+    for i in range(num_genregs):
+        gen_regs[i] = default_val
     # mode = {
     #     0: (lambda x:gen_regs[x % num_genregs]),
     #     1: (lambda x:ip_regs[x % num_ipregs])
@@ -30,19 +119,11 @@ cdef list runprog(prog, list ip):
     # cdef int[:] source_col = array.array('i', prog.prog[const.SOURCE])[:]
     # cdef int[:] mode_col = array.array('i', prog.prog[const.MODE])[:]
     # cdef int[:] op_col = array.array('i', prog.prog[const.OP])[:]
-    cdef list target_col = prog.prog[const.TARGET]
-    cdef list source_col = prog.prog[const.SOURCE]
-    cdef list mode_col = prog.prog[const.MODE]
-    cdef list op_col = prog.prog[const.OP]
 
-
-    if not prog.effective_instrs:
-        prog.effective_instrs = find_introns(target_col, source_col, mode_col)
-
-    cdef int i, j, mode, op_code, target, source_val
-    cdef np.float64_t source
-    cdef list effective_instrs = prog.effective_instrs
-    for j in range(len(effective_instrs)):
+    cdef int j, mode, op_code, target, source_val
+    #cdef int l = effective_instrs.size
+    cdef double source
+    for j in range(length):
         i = effective_instrs[j]
         mode = mode_col[i]
         op_code = op_col[i]
@@ -51,13 +132,22 @@ cdef list runprog(prog, list ip):
         if mode == 0:
             source = gen_regs[source_val % num_genregs]
         else:
-            source = ip_regs[source_val % num_ipregs]
+            #source = ip_regs[source_val % num_ipregs]
+            source = ip[source_val % num_ipregs]
+
         gen_regs[target] = calc(source, gen_regs[target], op_code)
 
-    output = gen_regs[:output_dims]
-    return output
+    # cdef list output = [x for x in gen_regs[:output_dims]]
+    # free(effective_instrs)
+    # free(ip)
+    # for i in range(3):
+    #     printf('%f\t', gen_regs[i])
+    # printf('\n')
+    return gen_regs
 
-cdef inline float calc(float source, float target, int op_code):
+
+@cython.cdivision(True)
+cdef inline double calc(double source, double target, double op_code) nogil:
     #do_op(op_col[i], gen_regs, target_col[i], source)
     if op_code == 0:
         return target+source
@@ -66,11 +156,14 @@ cdef inline float calc(float source, float target, int op_code):
     elif op_code == 2:
         return target*source
     elif op_code == 3:
-        return target/(sqrt(1+source**2))
+        if source != 0:
+            return target/source
+        else:
+            return 1
 
 
 # Return set w/ indices of effective instructions
-def find_introns(list target, list source, list mode):
+cpdef find_introns(list target, list source, list mode):
     # marked_instrs = set()
     # eff_regs = set(range(output_dims))
     # instrs = reversed(range(len(target)))
@@ -83,6 +176,8 @@ def find_introns(list target, list source, list mode):
     return introns(target, source, mode)
 
 cdef list introns(list target, list source, list mode):
+    global num_genregs, output_dims
+
     cdef list marked_instrs = []
     cdef set eff_regs = set(range(output_dims))
     #cdef list instrs = reversed(range(len(target)))
@@ -100,36 +195,15 @@ cdef list introns(list target, list source, list mode):
     #return sorted(marked_instrs)
     return marked_instrs
 
-cdef add(list target, int index, float source):
-    target[index] += source
-
-cdef sub(list target, int index, float source):
-    target[index] -= source
-
-cdef mult(list target, int index, float source):
-    target[index] *= source
-
-cdef div(list target, int index, float source):
-    target[index] /= (sqrt(1+source**2))
-
-#ops = { 0: add, 1: sub, 2: mult, 3: div }
-ops = [ add, sub, mult, div ]
-
-
-#cdef do_op(int op_code, list target, int index, float source):
-cdef do_op(int op_code, float target, float source):
-    # try:
-    #     ops[op_code](target, index, source)
-    # except Exception as e:
-    #     print(e)
-
-    #ops[op_code](target, index, source)
-    # if op_code == 0:
-    #     target[index] += source
-    # elif op_code == 1:
-    #     target[index] -= source
-    # elif op_code == 2:
-    #     target[index] *= source
-    # elif op_code == 3:
-    #     target[index] /= (sqrt(1+source**2))
-    pass
+# cdef int[] find_introns(int[] target, int[] source, int[] mode):
+#     global num_genregs, output_dims
+#
+#     cdef int[48] marked_instrs
+#     cdef int[num_genregs] eff_regs
+#
+# cdef int contains(int[] arr, int num):
+#     cdef int i
+#     for i in range(sizeof(arr)):
+#         if arr[i] == num:
+#             return 1
+#     return 0

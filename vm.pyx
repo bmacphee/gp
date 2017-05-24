@@ -73,7 +73,7 @@ cpdef list run_prog(prog, array.array[double] ip):
     op_col = prog.prog[const.OP]
 
     if prog.effective_instrs is None:
-        prog.effective_instrs = find_introns(target_col, source_col, mode_col)
+        setattr(prog, 'effective_instrs', find_introns(target_col, source_col, mode_col))
 
     cdef int s = len(prog.effective_instrs)
     cdef int* effective_instrs = <int*> malloc(sizeof(int)*s)
@@ -132,17 +132,8 @@ cdef double* runprog(int length, int[] effective_instrs, int[] target_col, int[]
         if mode == 0:
             source = gen_regs[source_val % num_genregs]
         else:
-            #source = ip_regs[source_val % num_ipregs]
             source = ip[source_val % num_ipregs]
-
         gen_regs[target] = calc(source, gen_regs[target], op_code)
-
-    # cdef list output = [x for x in gen_regs[:output_dims]]
-    # free(effective_instrs)
-    # free(ip)
-    # for i in range(3):
-    #     printf('%f\t', gen_regs[i])
-    # printf('\n')
     return gen_regs
 
 
@@ -164,15 +155,6 @@ cdef inline double calc(double source, double target, double op_code) nogil:
 
 # Return set w/ indices of effective instructions
 cpdef find_introns(list target, list source, list mode):
-    # marked_instrs = set()
-    # eff_regs = set(range(output_dims))
-    # instrs = reversed(range(len(target)))
-    # for i in instrs:
-    #     if target[i] in eff_regs:
-    #         marked_instrs.add(i)
-    #         if mode[i] == 0:
-    #             eff_regs.add(source[i] % num_genregs)
-    # return sorted(marked_instrs)
     return introns(target, source, mode)
 
 cdef list introns(list target, list source, list mode):
@@ -180,10 +162,9 @@ cdef list introns(list target, list source, list mode):
 
     cdef list marked_instrs = []
     cdef set eff_regs = set(range(output_dims))
-    #cdef list instrs = reversed(range(len(target)))
-
     cdef int i = len(target)-1
     cdef int m, s
+
     while i >= 0:
         if target[i] in eff_regs:
             marked_instrs.insert(0, i)
@@ -192,18 +173,6 @@ cdef list introns(list target, list source, list mode):
                 s = source[i]
                 eff_regs.add(s % num_genregs)
         i -= 1
-    #return sorted(marked_instrs)
     return marked_instrs
 
-# cdef int[] find_introns(int[] target, int[] source, int[] mode):
-#     global num_genregs, output_dims
-#
-#     cdef int[48] marked_instrs
-#     cdef int[num_genregs] eff_regs
-#
-# cdef int contains(int[] arr, int num):
-#     cdef int i
-#     for i in range(sizeof(arr)):
-#         if arr[i] == num:
-#             return 1
-#     return 0
+#cpdef list get_predicted_classes(list progs, list X, int fitness_sharing):

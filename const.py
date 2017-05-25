@@ -24,5 +24,5 @@ class StandardizeMethod(Enum):
     LINEAR_TRANSFORM = 1
 
 class Selection(Enum):
-    STEADY_STATE_TOURN = 0
-    BREEDER_MODEL = 1
+    STEADY_STATE_TOURN = 'Steady State Tournmanet'
+    BREEDER_MODEL = 'Breeder Model'

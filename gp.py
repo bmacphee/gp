@@ -12,19 +12,21 @@ from array import array
 
 class Config:
     def __init__(self):
-        self.num_ops = 4
+        self.ops = [0, 1, 2, 3, 4, 5]
         self.pop_size = 100
-        self.generations = 100000
-        self.graph_step = 100
+        self.generations = 2000
+        self.graph_step = 10
         self.data_files = ['data/iris.data', 'data/tic-tac-toe.data', 'data/ann-train.data', 'data/shuttle.trn']
-        self.data_file = self.data_files[3]
+        self.data_file = self.data_files[2]
 
         self.data_by_classes = None
         self.standardize_method = const.StandardizeMethod.MEAN_VARIANCE
         self.selection = const.Selection.STEADY_STATE_TOURN
         self.alpha = 1
-        self.use_subset = True
+        self.use_subset = 1
         self.subset_size = 200
+        self.use_validation = 0
+        self.validation_size = 100
         self.classes = None
         self.train_fitness_eval = None
         self.test_fitness_eval = None
@@ -32,6 +34,7 @@ class Config:
     def load(self):
         self.train_fitness_eval = fitness_sharing
         self.test_fitness_eval = avg_detect_rate
+        self.subset_sampling = even_data_subset
 
         data = load_data(self.data_file)
         y = [ex[-1:len(ex)][0] for ex in data]
@@ -47,12 +50,17 @@ class Config:
             self.y_test = [self.classes[label] for label in [ex[-1:len(ex)][0] for ex in test_data]]
         except KeyError:
             X = preprocess([ex[:len(ex)-1] for ex in data])
-            X_train, X_test, y_train, y_test = split_data(X, y, env.standardize_method)
+            X_train, X_test, y_train, y_test = split_data(X, y, self.standardize_method)
             self.X_train, self.X_test, self.y_train, self.y_test = preprocess(X_train), preprocess(X_test), y_train, y_test
 
         self.num_ipregs = len(self.X_train[0])
         self.output_dims = len(self.classes)
-        self.max_vals = [const.GEN_REGS-1, max(const.GEN_REGS, self.num_ipregs)-1, self.num_ops-1, 1]
+        self.max_vals = [const.GEN_REGS - 1, max(const.GEN_REGS, self.num_ipregs) - 1, None, 1]
+
+    def set_classes(self, X, y):
+        self.data_by_classes = {}
+        for cl in self.classes.values():
+            self.data_by_classes[cl] = [X[i] for i in range(len(X)) if y[i] == cl]
 
 
 
@@ -74,7 +82,7 @@ def gen_prog(prog_length, num_ipregs):
     prog = [[],[],[],[]]
     prog[const.TARGET] = np.random.randint(const.GEN_REGS, size=prog_length).tolist()
     prog[const.SOURCE] = np.random.randint(max(const.GEN_REGS, env.num_ipregs), size=prog_length).tolist()
-    prog[const.OP] = np.random.randint(env.num_ops, size=prog_length).tolist()
+    prog[const.OP] = np.random.choice(env.ops, size=prog_length).tolist()
     prog[const.MODE] = np.random.randint(2, size=prog_length).tolist()
     return Prog(prog)
 
@@ -101,8 +109,13 @@ def load_data(fname, split=','):
 def get_classes(data):
     classes = set(data)
     classmap = {}
+    # Check for numeric classes
     for i in range(len(classes)):
-        classmap[classes.pop()] = i
+        cl = classes.pop()
+        try:
+            classmap[cl] = int(cl)
+        except ValueError:
+            classmap[cl] = i
     return classmap
 
 
@@ -155,7 +168,7 @@ def convert_non_num_data(data):
     return data
 
 
-def split_data(X, y, standardize_method, alpha=1, test_size=0.2):
+def split_data(X, y, standardize_method, alpha=1, test_size=0.1):
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, stratify=y)
     if standardize_method:
         X_train, val0, val1 = standardize(X_train, standardize_method, alpha=alpha)
@@ -183,9 +196,8 @@ def avg_detect_rate(prog, y, y_pred, store_fitness=None):
     if store_fitness:
         setattr(prog, store_fitness, fitness)
     return fitness
-#
 
-# #@profile
+# old fitness sharing func
 # def fitness_sharing(pop, X, y, store_fitness=None):
 #     training = (store_fitness == 'trainset_trainfit')
 #     all_y_pred = [predicted_classes(prog, X, fitness_sharing=training) for prog in pop]
@@ -193,20 +205,23 @@ def avg_detect_rate(prog, y, y_pred, store_fitness=None):
 #     all_fitness = [per_ex_fitness(y, [all_y_pred[i]])/sum_fitness for i in range(len(pop))]
 #     return all_fitness
 #@profile
+
 def fitness_sharing(pop, X, y, store_fitness=None):
-    #for p in pop:
-        #print("Y_pred: {}".format(p.train_y_pred))
-    training = (store_fitness == 'trainset_trainfit')
-    all_y_pred = [predicted_classes(prog, X, fitness_sharing=training) for prog in pop]
-    denoms = [sum([1 for j in range(len(all_y_pred)) if all_y_pred[j][i] == y[i]])+1 for i in range(len(y))]
-    fitness = [sum([int(y_pred[i] == y[i])/denoms[i] for i in range(len(y))]) for y_pred in all_y_pred]
+    #training = (store_fitness == 'trainset_trainfit')
+    per_ex_fitnesses = [per_ex_fitness(prog, X, y) for prog in pop]
+    denom = sum(per_ex_fitnesses) + len(pop)
+    fitness = [f/denom for f in per_ex_fitnesses]
     return fitness
 
+def per_ex_fitness(prog, X, y):
+    y_pred = predicted_classes(prog, X, fitness_sharing=True)
+    return sum([1 for i in range(len(y)) if y[i] == y_pred[i]])
 
 '''
 Results
 '''
 
+# prog thread
 # class progThread (threading.Thread):
 #    def __init__(self, threadID):
 #       threading.Thread.__init__(self)
@@ -224,17 +239,8 @@ Results
 #       counter -= 1
 
 
-global calls
-calls = {}
 #@profile
 def predicted_classes(prog, X, fitness_sharing=False):
-    global calls
-    caller = caller_name(skip=3)
-    try:
-        calls[caller] += 1
-    except:
-        calls[caller] = 1
-    #pdb.set_trace()
     if fitness_sharing and prog.train_y_pred is not None:
         return prog.train_y_pred
 
@@ -305,9 +311,12 @@ def get_fitness_results(pop, X, y, fitness_eval, store_fitness=None):
             results = [getattr(prog, store_fitness) for prog in pop]
 
     else:
-        results = [fitness_eval(prog, y, predicted_classes(prog, X), store_fitness=store_fitness) if (store_fitness is None or env.use_subset or getattr(prog, store_fitness) is None) else getattr(prog, store_fitness) for prog in pop]
+        results = [fitness_eval(prog, y, predicted_classes(prog, X), store_fitness=store_fitness)
+                   if (store_fitness is None or env.use_subset or getattr(prog, store_fitness) is None)
+                   else getattr(prog, store_fitness) for prog in pop]
 
         # Speed testing:
+
         # results=[]
         # for prog in pop:
         #     if (store_fitness is None):
@@ -323,6 +332,7 @@ def get_fitness_results(pop, X, y, fitness_eval, store_fitness=None):
         #         results.append(fit)
     return results
 
+# Processes
 # def fitness_results(prog, X, y, fitness_eval, store_fitness=None, l=None):
 #     if fitness_eval == fitness_sharing:
 #         if (store_fitness is None) or (getattr(pop[0], store_fitness) is None):
@@ -401,8 +411,8 @@ def mutation(progs, effective_mutations=True):
             orig_val = prog.prog[col][index]
             new_val = orig_val
             if col == const.OP:
-                options = list(range(env.max_vals[const.OP]+1))
-                options.pop(orig_val)
+                options = env.ops[:]
+                options.remove(orig_val)
                 new_val = np.random.choice(options)
             #
             # elif (col == const.TARGET) and effective_mutations:
@@ -434,7 +444,8 @@ def tournament(X, y, pop, fitness_eval, var_op_probs = [0.5, 0.5]):
     while len(indivs) < const.TOURNAMENT_SIZE:
         indivs.add(random.randint(0, len(pop)-1))
     selected_i = list(indivs)
-    results = get_fitness_results([pop[i] for i in selected_i], X, y, fitness_eval=fitness_eval, store_fitness='trainset_trainfit')
+    results = get_fitness_results([pop[i] for i in selected_i], X, y, fitness_eval=fitness_eval,
+                                  store_fitness='trainset_trainfit')
 
     winners_i = []
     while len(winners_i) < 2:
@@ -527,18 +538,28 @@ def check_fitness_after_variation(prog, instrs_changed):
 
 
 #@profile
-def run_model(X, y, pop, selection, generations, fitness_eval, X_test=None, y_test=None, show_graph=1):
+def run_model(X, y, pop, selection, generations, fitness_eval, X_test=None, y_test=None, X_valid=None, y_valid=None,
+              show_graph=1):
     to_graph = {
-        'top_trainfit_in_trainset': 0,
-        'train_means': 0,
+        'top_trainfit_in_trainset': 1,
+        'train_means': None,
         'test_means': 1,
         'top_train_prog_on_test': 1,
-        'top_test_fit_on_train': 1
+        'top_test_fit_on_train': 1,
+        'percentages': 1
     }
+    to_graph['train_means'] = to_graph['top_trainfit_in_trainset']
+
+    if to_graph['percentages']:
+        percentages = {}
+        for cl in env.classes:
+            percentages[cl] = []
+
     graph_step = env.graph_step
     test_fitness_eval = env.test_fitness_eval
     trainset_results_with_trainfit, trainset_results_with_testfit, testset_results_with_testfit = [], [], []
     trainfit_trainset_means, testfit_trainset_means, top_trainfit_in_trainset, top_prog_testfit_on_testset, top_testfit_in_trainset = [], [], [], [], []
+    validation = (X_valid is not None) and (y_valid is not None)
     print_info()
 
     # print('Start fitness: ')
@@ -555,85 +576,128 @@ def run_model(X, y, pop, selection, generations, fitness_eval, X_test=None, y_te
         print('.', end='')
         sys.stdout.flush()
         assert len(pop) == env.pop_size
-        pop = select(X, y, pop, fitness_eval)
 
         if env.use_subset:
-            X, y = get_data_subset(X, y)
+            if i == 0:
+                orig_X, orig_y = X, y
+                orig_Xvalid, orig_yvalid = X_valid, y_valid
+            X, y = env.subset_sampling(orig_X, orig_y, env.subset_size)
+            #if (X_valid is not None and y_valid is not None):
+                #X_valid, y_valid = env.subset_sampling(orig_Xvalid, orig_yvalid, env.validation_size)
+        pop = select(X, y, pop, fitness_eval)
+
 
         if (i % graph_step == 0) or (i == (env.generations-1)):
-            if to_graph['top_trainfit_in_trainset'] or to_graph['train_means'] or (env.train_fitness_eval == env.test_fitness_eval):
-                trainset_results_with_trainfit = get_fitness_results(pop, X, y, fitness_eval=env.train_fitness_eval, store_fitness='trainset_trainfit')
+            if to_graph['top_trainfit_in_trainset'] or (env.train_fitness_eval == env.test_fitness_eval):
+                trainset_results_with_trainfit = get_fitness_results(pop, X, y, fitness_eval=env.train_fitness_eval,
+                                                                     store_fitness='trainset_trainfit')
                 top_trainfit_in_trainset.append(max(trainset_results_with_trainfit))
                 trainfit_trainset_means.append(np.mean(trainset_results_with_trainfit))
 
-            if (env.train_fitness_eval != env.test_fitness_eval) and (to_graph['top_test_fit_on_train'] or to_graph['test_means']):
-                trainset_results_with_testfit = get_fitness_results(pop, X, y, fitness_eval=test_fitness_eval, store_fitness='trainset_testfit')
+            if (env.train_fitness_eval != env.test_fitness_eval) and (to_graph['top_test_fit_on_train']
+                                                                      or to_graph['test_means']):
+                if validation:
+                    xvals, yvals = X_valid, y_valid
+                else:
+                    xvals, yvals = X, y
+                trainset_results_with_testfit = get_fitness_results(pop, xvals, yvals, fitness_eval=test_fitness_eval,
+                                                                    store_fitness='trainset_testfit')
                 top_testfit_in_trainset.append(max(trainset_results_with_testfit))
                 testfit_trainset_means.append(np.mean(trainset_results_with_testfit))
 
             if (X_test and y_test) and to_graph['top_train_prog_on_test']:
                 if env.train_fitness_eval == env.test_fitness_eval:
                     trainset_results_with_testfit = trainset_results_with_trainfit
-                testset_results_with_testfit = get_fitness_results([get_top_prog(pop, trainset_results_with_testfit)], X_test, y_test, fitness_eval=test_fitness_eval, store_fitness='testset_testfit')[0]
+                testset_results_with_testfit = get_fitness_results([get_top_prog(pop, trainset_results_with_testfit)],
+                                                                   X_test, y_test, fitness_eval=test_fitness_eval,
+                                                                   store_fitness='testset_testfit')[0]
                 top_prog_testfit_on_testset.append(testset_results_with_testfit)
+
+            if to_graph['percentages']:
+                cp = class_percentages(get_top_prog(pop, trainset_results_with_testfit), X_test, y_test, env.classes)
+                for p in cp:
+                    percentages[p].append(cp[p])
+
+
 
     # print('End fitness: ')
     # results = get_fitness_results(pop, X, y, env.test_fitness_eval)
     # print('{}:  max({}): {}\tmean:{}'.format(1, results.index(max(results)), max(results), sum(results) / float(len(results))))
     if show_graph:
-        graph_params = [top_trainfit_in_trainset, trainfit_trainset_means, testfit_trainset_means, top_prog_testfit_on_testset, top_testfit_in_trainset]
-        graph_inc = [to_graph['top_trainfit_in_trainset'], to_graph['train_means'], to_graph['test_means'], to_graph['top_train_prog_on_test'], to_graph['top_test_fit_on_train']]
-        graph_params = list(map(lambda x: graph_params[x] if graph_inc[x] else None, range(len(graph_params))))
-        graph(graph_step, env.generations-1, graph_params[0], graph_params[1], graph_params[2], graph_params[3], graph_params[4])
+        graphparam = [top_trainfit_in_trainset, trainfit_trainset_means, testfit_trainset_means,
+                        top_prog_testfit_on_testset, top_testfit_in_trainset]
+        graph_inc = [to_graph['top_trainfit_in_trainset'], to_graph['train_means'], to_graph['test_means'],
+                     to_graph['top_train_prog_on_test'], to_graph['top_test_fit_on_train']]
+        graphparam = list(map(lambda x: graphparam[x] if graph_inc[x] else None, range(len(graphparam))))
+        graph(graph_step, env.generations-1, graphparam[0], graphparam[1], graphparam[2], graphparam[3], graphparam[4])
+
+        if to_graph['percentages']:
+            graph_percs(graph_step, env.generations-1, percentages)
     return pop, trainset_results_with_trainfit, trainset_results_with_testfit, testset_results_with_testfit
 
 
-def get_data_subset(X, y):
+def even_data_subset(X, y, subset_size):
     if not env.data_by_classes:
-        env.data_by_classes = []
-        for cl in env.classes.values():
-            env.data_by_classes.append([X[i] for i in range(len(X)) if y[i] == cl])
-    subset_size = int(env.subset_size / len(env.classes))
-    subset, subset_cl = [], []
-    for i in range(len(env.data_by_classes)):
+        env.set_classes(X, y)
+
+    subset_size = int(subset_size / len(env.classes))
+    subset_x, subset_y = [], []
+
+    for i in env.data_by_classes:
         class_size = len(env.data_by_classes[i])
         if class_size <= subset_size:
-            subset += env.data_by_classes[i]
-            subset_cl += [i]*class_size
+            subset_size = class_size
+            subset_x += env.data_by_classes[i]
         else:
-            subset += train_test_split(env.data_by_classes[i], train_size=(subset_size/class_size))[0]
-            subset_cl += [i]*subset_size
-    return subset, subset_cl
+            subset_x += train_test_split(env.data_by_classes[i], train_size=(subset_size/class_size))[0]
+        subset_y += [i]*subset_size
+    return subset_x, subset_y
+
+def uniformprob_data_subset(X, y, subset_size):
+    if not env.data_by_classes:
+        env.set_classes(X, y)
+    subset_x, temp, subset_y, temp = train_test_split(X, y, train_size=(subset_size / len(X)))
+    return subset_x, subset_y
 
 
-def graph(graph_step, last_x, top_results=None, train_means=None, test_means=None, top_train_prog_on_test=None, top_test_fit_on_train=None):
-    generations = [i for i in range(env.generations) if (i % graph_step == 0)]
-    if generations[-1] != last_x:
-        generations.append(last_x)
+def graph(graph_step, last_x, top_train_fit_on_train=None, train_means=None, test_means=None,
+          top_train_prog_on_test=None, top_test_fit_on_train=None):
+    gens = [i for i in range(env.generations) if (i % graph_step == 0)]
+    if gens[-1] != last_x:
+        gens.append(last_x)
 
     fig = plt.figure(figsize=(13, 13), dpi=80)
     ax = fig.add_subplot(111)
+    valid_train = 'Validation' if env.use_subset else 'Train'
     labels = [
         'Max Train Fitness in Train Set', 'Mean Train Fitness in Train Set', 'Mean Test Fitness in Train Set',
-        'Best Train Prog on Test Set (using test_fit)', 'Best Train Prog on Train Set (using test_fit)'
+        'Best {} Prog on Test Set (using test_fit)'.format(valid_train),
+        'Best Train Prog on {} Set (using test_fit)'.format(valid_train)
     ]
-    if top_results:
-        ax.plot(generations, top_results, label=labels[0])
+    if top_train_fit_on_train:
+        ax.plot(gens, top_train_fit_on_train, label=labels[0])
     if train_means:
-        ax.plot(generations, train_means, label=labels[1])
+        ax.plot(gens, train_means, label=labels[1])
     if test_means:
-        ax.plot(generations, test_means, label=labels[2])
+        ax.plot(gens, test_means, label=labels[2])
     if top_train_prog_on_test:
-        ax.plot(generations, top_train_prog_on_test, label=labels[3])
+        ax.plot(gens, top_train_prog_on_test, label=labels[3])
     if top_test_fit_on_train:
-        ax.plot(generations, top_test_fit_on_train, label=labels[4])
+        ax.plot(gens, top_test_fit_on_train, label=labels[4])
 
-    plt.title('Data: {}\nSelection: {}\nPop Size: {}, Generations: {}, Step Size: {}\nTraining Fitness: {}, Test Fitness: {}'.format(
-        env.data_file, env.selection.value, env.pop_size, env.generations, env.graph_step, env.train_fitness_eval.__name__,env.test_fitness_eval.__name__))
+    subset_str = ', Subset Size: {}'.format(env.subset_size) if env.use_subset else ''
+    valid_str = ''
+    if env.use_validation:
+        valid_str = ', Validation Size: {}'.format(env.validation_size)
+    plt.title('Data: {}\nSelection: {}\nPop Size: {}, Generations: {}, Step Size: {}{}{}\nTraining Fitness: {}, '
+              'Test Fitness: {}'.format(env.data_file, env.selection.value, env.pop_size, env.generations,
+                                        env.graph_step, subset_str, valid_str, env.train_fitness_eval.__name__,
+                                        env.test_fitness_eval.__name__))
     plt.legend(loc=9, bbox_to_anchor=(0.5, -0.03), fontsize=8)
     plt.grid(which='both', axis='both')
     ax.set_xlim(xmin=0)
-    ax.set_ylim(ymax=1)
+    if not (train_means or top_train_fit_on_train):
+        ax.set_ylim(ymax=1.1)
     ax.yaxis.set_major_locator(MultipleLocator(.1))
     ax.yaxis.set_minor_locator(AutoMinorLocator(2))
     ax.xaxis.set_minor_locator(AutoMinorLocator())
@@ -641,8 +705,25 @@ def graph(graph_step, last_x, top_results=None, train_means=None, test_means=Non
     plt.show()
 
 
+def graph_percs(graph_step, last_x, percentages):
+    generations = [i for i in range(env.generations) if (i % graph_step == 0)]
+    if generations[-1] != last_x:
+        generations.append(last_x)
+
+    fig = plt.figure(figsize=(13, 13), dpi=80)
+    ax = fig.add_subplot(111)
+    labels = sorted([perc for perc in percentages])
+    for l in labels:
+        ax.plot(generations, percentages[l], label=l)
+    plt.title('% Classes Correct')
+    plt.legend(bbox_to_anchor=(1.09, 1), fontsize=8)
+    plt.grid(which='both', axis='both')
+    ax.set_xlim(xmin=0)
+    plt.show()
+
+
 #@profile
-def get_average_fitness(env, num_trials, train_fitness_eval, test_fitness_eval=None, validation=False):
+def get_average_fitness(env, num_trials, train_fitness_eval, test_fitness_eval=None):
     if not test_fitness_eval:
         test_fitness_eval = train_fitness_eval
 
@@ -650,10 +731,11 @@ def get_average_fitness(env, num_trials, train_fitness_eval, test_fitness_eval=N
     max_test_fitness_on_train , mean_test_fitness_on_train, top_train_prog_on_test, valid_test_fitness, top_test_fitness_on_train = [], [], [], [], []
     top_test_fitness, valid_train_fitness = [], []
 
-    # Fix for already split data
+    validation = env.use_validation
     if validation:
-        X_train, X_valid, y_train, y_valid = split_data(X, y, None)
+        X_train, X_valid, y_train, y_valid = split_data(env.X_train, env.y_train, None)
     else:
+        X_valid, y_valid = None, None
         X_train, y_train = env.X_train, env.y_train
     X_test, y_test = env.X_test, env.y_test
 
@@ -663,55 +745,61 @@ def get_average_fitness(env, num_trials, train_fitness_eval, test_fitness_eval=N
         pop, train_results_with_train_fit, train_results_with_test_fit, test_result_with_test_fit = run_model(X_train, y_train, pop,
                                                                                                               env.selection, env.generations,
                                                                                                               train_fitness_eval,
-                                                                                                              X_test=X_test, y_test=y_test)
-        # Testing
-        env.pop = pop
-        env.X_train, env.X_test = X_train, X_test
-        env.y_train, env.y_test = y_train, y_test
+                                                                                                              X_test=X_test, y_test=y_test,
+                                                                                                              X_valid=X_valid, y_valid=y_valid)
 
         max_test_fitness_on_train.append(max(train_results_with_test_fit))
         mean_test_fitness_on_train.append(np.mean(train_results_with_test_fit))
         top_train_prog_on_test.append(test_result_with_test_fit)
 
         print('\nTop program (from train_fitness on training set):')
-        print('Test_fitness on test set: {} \nTest_fitness on train set: {}'.format(test_result_with_test_fit, max(train_results_with_test_fit)))
+        print('Test_fitness on test set: {} \nTest_fitness on train set: {}'.format(test_result_with_test_fit,
+                                                                                    max(train_results_with_test_fit)))
+
 
         top_prog = get_top_prog(pop, train_results_with_test_fit)
         train_cl = class_percentages(top_prog, X_train, y_train, env.classes)
         test_cl = class_percentages(top_prog, X_test, y_test, env.classes)
         print('Test class percentages: {}\nTrain class percentages: {}'.format(test_cl, train_cl))
 
-        test_fit_on_test = get_fitness_results(pop, X_test, y_test, fitness_eval=test_fitness_eval, store_fitness='testset_testfit')
+        test_fit_on_test = get_fitness_results(pop, X_test, y_test, fitness_eval=test_fitness_eval,
+                                               store_fitness='testset_testfit')
         top_test_result = max(test_fit_on_test)
         top_result_i = test_fit_on_test.index(top_test_result)
-        top_prog_from_test_on_train = get_fitness_results([pop[top_result_i]], X_train, y_train, test_fitness_eval, store_fitness='trainset_testfit')[0]
+        top_prog_from_test_on_train = get_fitness_results([pop[top_result_i]], X_train, y_train, test_fitness_eval,
+                                                          store_fitness='trainset_testfit')[0]
         top_test_fitness.append(top_test_result)
         top_test_fitness_on_train.append(top_prog_from_test_on_train)
 
         print('\nTop program (from test_fitness on test set):')
-        print('Top test_fitness in test set: {} \nTest_fitness on train set for top: {}'.format(top_test_result, top_prog_from_test_on_train))
+        print('Top test_fitness in test set: {} \nTest_fitness on train set for top: {}'.format(top_test_result,
+                                                                                                top_prog_from_test_on_train))
 
         if validation:
-            valid_fitness_eval = fitness_eval
-            results = get_fitness_results(pop, X_valid, y_valid, fitness_eval=valid_fitness_eval)
-            top_prog = get_top_prog(pop, results)
-            test_results = get_fitness_results([top_prog], X_test, y_test, valid_fitness_eval)
-            valid_score = get_fitness_results([top_prog], X_train, y_train, fitness_eval=valid_fitness_eval)
-
-            test_acc = get_fitness_results([top_prog], X_test, y_test, fitness_eval=avg_detect_rate)[0]
-            train_acc = get_fitness_results([top_prog], X_train, y_train, fitness_eval=avg_detect_rate)[0]
-            valid_test_fitness.append(test_acc)
-            valid_train_fitness.append(train_acc)
-            print('Top fitness on validation data: {} (Acc: {}) \nScore on train data for top: {} (Acc: {})'.format(test_results[0], test_acc, valid_score, train_acc))
+            # valid_fitness_eval = fitness_eval
+            # results = get_fitness_results(pop, X_valid, y_valid, fitness_eval=valid_fitness_eval)
+            # top_prog = get_top_prog(pop, results)
+            # test_results = get_fitness_results([top_prog], X_test, y_test, valid_fitness_eval)
+            # valid_score = get_fitness_results([top_prog], X_train, y_train, fitness_eval=valid_fitness_eval)
+            #
+            # test_acc = get_fitness_results([top_prog], X_test, y_test, fitness_eval=avg_detect_rate)[0]
+            # train_acc = get_fitness_results([top_prog], X_train, y_train, fitness_eval=avg_detect_rate)[0]
+            # valid_test_fitness.append(test_acc)
+            # valid_train_fitness.append(train_acc)
+            # print('Top fitness on validation data: {} (Acc: {}) \nScore on train data for top: {} (Acc: {})'.format(test_results[0], test_acc, valid_score, train_acc))
+            pass
 
     avg_max, avg_mean, avg_test = np.mean(max_test_fitness_on_train), np.mean(mean_test_fitness_on_train), np.mean(top_train_prog_on_test)
     avg_top_test, avg_top_on_train = np.mean(top_test_fitness), np.mean(top_test_fitness_on_train)
 
-    print('\nTrials: {}\nAverage max test_fitness on train: {}\nAverage mean test_fitness on train: {}\nAverage test_fitness on test: {}\n'.format(num_trials, avg_max, avg_mean, avg_test))
-    print('Average top test_fitness on test: {}\nAverage top test_fitness on train, from top test_fitness on test: {}\n'.format(avg_top_test, avg_top_on_train))
+    print('\nTrials: {}\nAverage max test_fitness on train: {}\nAverage mean test_fitness on train: {}\n'
+          'Average test_fitness on test: {}\n'.format(num_trials, avg_max, avg_mean, avg_test))
+    print('Average top test_fitness on test: {}\n'
+          'Average top test_fitness on train, from top test_fitness on test: {}\n'.format(avg_top_test, avg_top_on_train))
     if validation:
         avg_valid_test, avg_top_valid_on_train = np.mean(valid_test_fitness), np.mean(valid_train_fitness)
-        print('Average test acc from top valid: {}\nAverage top valid program acc on training: {}\n'.format(avg_valid_test, avg_top_valid_on_train))
+        print('Average test acc from top valid: {}\n'
+              'Average top valid program acc on training: {}\n'.format(avg_valid_test, avg_top_valid_on_train))
 
 
 def get_ranked_index(results):
@@ -753,17 +841,18 @@ def class_percentages(prog, X, y, classes):
 
 
 def print_info():
-    print('Population size: {}\nGenerations: {}\nData: {}\nSelection Replacement: {}\nAlpha: {}\n'.format(env.pop_size, env.generations, env.data_file, env.selection.name, env.alpha))
+    print('Population size: {}\nGenerations: {}\nData: {}\nSelection Replacement: {}\n'
+          'Alpha: {}\n'.format(env.pop_size, env.generations, env.data_file, env.selection.name, env.alpha))
 
 
 #@profile
 def main():
-    trials = 10
+    trials = 1
     get_average_fitness(env, trials, train_fitness_eval=env.train_fitness_eval, test_fitness_eval=env.test_fitness_eval)
 
 
 def init_vm():
-    vm.init(const.GEN_REGS, env.num_ipregs, env.num_ops, env.output_dims)
+    vm.init(const.GEN_REGS, env.num_ipregs, env.output_dims)
 
 
 env = Config()

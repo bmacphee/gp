@@ -11,6 +11,14 @@ GEN_REGS = 8
 TEST_DATA_FILES = { 'data/ann-train.data': 'data/ann-test.data',
                     'data/shuttle.trn': 'data/shuttle.tst' }
 
+OPS = {
+    0: '+',
+    1: '-',
+    2: '*',
+    3: '/',
+    4: 'sin',
+    5: 'x^y'
+}
 # Not used yet
 #VAR_OPS = [gp.recombination, gp.mutation]
 

@@ -6,6 +6,7 @@ from cpython cimport array
 import array
 #from libc.math cimport sqrt
 cimport cython
+
 from libc.stdlib cimport malloc, free
 from cpython cimport array
 from libc.stdio cimport printf
@@ -29,7 +30,7 @@ cdef extern from "math.h":
 # cdef int prog_len = const.PROG_LENGTH
 # test = num_genregs
 cdef class Vm(object):
-    cdef public int num_genregs, num_ipregs, num_ops, output_dims
+    cdef public int num_genregs, num_ipregs, output_dims
     cdef int prog_len
     cdef float default_val
 
@@ -38,6 +39,14 @@ cdef class Vm(object):
         self.num_ipregs = num_ipregs
         self.output_dims = output_dims
 
+cdef extern from "math.h":
+    cpdef double sin(double x) nogil
+
+cdef extern from "math.h":
+    cpdef double pow(double x, double y) nogil
+
+cdef extern from "math.h":
+    cpdef double fabs(double x) nogil
 
 cdef double default_val = 1
 cdef int num_genregs = 8
@@ -49,12 +58,11 @@ cdef int prog_len = const.PROG_LENGTH
 def get_vals():
     return num_genregs, num_ipregs, num_ops, output_dims
 
-cpdef void init(int genregs, int ipregs, int ops, int outdims):
-    global num_genregs, num_ipregs, num_ops, output_dims
+cpdef void init(int genregs, int ipregs, int outdims):
+    global num_genregs, num_ipregs, output_dims
 
     num_genregs = genregs
     num_ipregs = ipregs
-    num_ops = ops
     output_dims = outdims
 
 @cython.boundscheck(False)
@@ -140,6 +148,7 @@ cdef double* runprog(int length, int[] effective_instrs, int[] target_col, int[]
 @cython.cdivision(True)
 cdef inline double calc(double source, double target, double op_code) nogil:
     #do_op(op_col[i], gen_regs, target_col[i], source)
+    cdef double penalty = -100000
     if op_code == 0:
         return target+source
     elif op_code == 1:
@@ -150,7 +159,15 @@ cdef inline double calc(double source, double target, double op_code) nogil:
         if source != 0:
             return target/source
         else:
-            return 1
+            return target + penalty
+    elif op_code == 4:
+        return sin(target)
+    elif op_code == 5:
+        if fabs(source) <= 10:
+            return pow(fabs(target), source)
+        else:
+            return target + penalty
+
 
 
 # Return set w/ indices of effective instructions
@@ -169,6 +186,8 @@ cdef list introns(list target, list source, list mode):
         if target[i] in eff_regs:
             marked_instrs.insert(0, i)
             m = mode[i]
+            # Mode = 0: source is a general register
+            # TODO: effective regs shouldn't include source for single-op instructions
             if mode[i] == 0:
                 s = source[i]
                 eff_regs.add(s % num_genregs)

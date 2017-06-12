@@ -7,9 +7,17 @@ MODE = 3
 PROG_LENGTH = 48
 TOURNAMENT_SIZE = 4
 GEN_REGS = 8
+IMAGE_DIR = '/home/selene/Documents/'
+TEST_DATA_FILES = {
+    'data/ann-train.data': 'data/ann-test.data',
+    'data/shuttle.trn': 'data/shuttle.tst',
+    'data/MNIST/train-images.idx3-ubyte': 'data/MNIST/t10k-images.idx3-ubyte'
+}
 
-TEST_DATA_FILES = { 'data/ann-train.data': 'data/ann-test.data',
-                    'data/shuttle.trn': 'data/shuttle.tst' }
+LABEL_DATA_FILES = {
+    'data/MNIST/train-images.idx3-ubyte': 'data/MNIST/train-labels.idx1-ubyte',
+    'data/MNIST/t10k-images.idx3-ubyte': 'data/MNIST/t10k-labels.idx1-ubyte'
+}
 
 OPS = {
     0: '+',
@@ -17,7 +25,8 @@ OPS = {
     2: '*',
     3: '/',
     4: 'sin',
-    5: 'x^y'
+    5: 'e',
+    6: 'ln'
 }
 # Not used yet
 #VAR_OPS = [gp.recombination, gp.mutation]

@@ -1,435 +1,227 @@
-import const, random, vm, copy, sys, threading
+import const, random, vm, sys, threading, time, shelve, matplotlib, pdb
 import numpy as np
-import multiprocessing as mp
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-import pdb
+
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MultipleLocator, AutoMinorLocator, FormatStrFormatter
+import fitness as fit
+import data_utils as util
+from matplotlib.ticker import MultipleLocator, AutoMinorLocator
 from importlib import reload
 from array import array
+from sklearn.model_selection import train_test_split
+
+TESTING = 1
+data, env = None, None
 
 
 class Config:
     def __init__(self):
-        self.ops = [0, 1, 2, 3, 4, 5]
+        self.ops = [0, 1, 2, 3]
         self.pop_size = 100
-        self.generations = 2000
-        self.graph_step = 10
-        self.data_files = ['data/iris.data', 'data/tic-tac-toe.data', 'data/ann-train.data', 'data/shuttle.trn']
+        self.generations = 10
+        self.graph_step = 1
+        self.graph_save_step = None
+        self.data_files = ['data/iris.data', 'data/tic-tac-toe.data', 'data/ann-train.data', 'data/shuttle.trn',
+                           'data/MNIST/train-images.idx3-ubyte']
         self.data_file = self.data_files[2]
 
-        self.data_by_classes = None
         self.standardize_method = const.StandardizeMethod.MEAN_VARIANCE
-        self.selection = const.Selection.STEADY_STATE_TOURN
+        self.selection = const.Selection.BREEDER_MODEL
         self.alpha = 1
         self.use_subset = 1
         self.subset_size = 200
-        self.use_validation = 0
-        self.validation_size = 100
-        self.classes = None
+        self.use_validation = 1
+        self.validation_size = 200
+        self.test_size = 0.2
         self.train_fitness_eval = None
         self.test_fitness_eval = None
+        self.num_ipregs = None
+        self.train_fitness_eval = fit.fitness_sharing
+        self.test_fitness_eval = fit.avg_detect_rate
+        self.subset_sampling = util.even_data_subset
 
-    def load(self):
-        self.train_fitness_eval = fitness_sharing
-        self.test_fitness_eval = avg_detect_rate
-        self.subset_sampling = even_data_subset
 
-        data = load_data(self.data_file)
+class Data:
+    def __init__(self):
+        self.classes = None
+        self.data_by_classes = {}
+        self.X_train = None
+        self.X_test = None
+        self.y_train = None
+        self.y_test = None
+
+    def load_data(self, config):
+        if config.data_file is None:
+            return
+
+        data = util.load_data(config.data_file)
         y = [ex[-1:len(ex)][0] for ex in data]
-        self.classes = get_classes(y)
-        y = [self.classes[label] for label in y]
-
+        self.classes = util.get_classes(y)
+        y = np.array([self.classes[label] for label in y], dtype=np.int32)
+        X = util.preprocess([ex[:len(ex) - 1] for ex in data])
 
         try:
-            test_data = load_data(const.TEST_DATA_FILES[self.data_file])
-            self.X_train = preprocess([ex[:len(ex)-1] for ex in data])
+            test_data = util.load_data(const.TEST_DATA_FILES[config.data_file])
+            X_train = X
+            X_test = util.preprocess([ex[:len(ex) - 1] for ex in test_data])
             self.y_train = y
-            self.X_test = preprocess([ex[:len(ex)-1] for ex in test_data])
-            self.y_test = [self.classes[label] for label in [ex[-1:len(ex)][0] for ex in test_data]]
+            self.y_test = np.array([self.classes[label] for label in [ex[-1:len(ex)][0] for ex in test_data]],
+                                   dtype=np.int32)
         except KeyError:
-            X = preprocess([ex[:len(ex)-1] for ex in data])
-            X_train, X_test, y_train, y_test = split_data(X, y, self.standardize_method)
-            self.X_train, self.X_test, self.y_train, self.y_test = preprocess(X_train), preprocess(X_test), y_train, y_test
+            X_train, X_test, self.y_train, self.y_test = util.split_data(X, y, config.test_size)
 
-        self.num_ipregs = len(self.X_train[0])
-        self.output_dims = len(self.classes)
-        self.max_vals = [const.GEN_REGS - 1, max(const.GEN_REGS, self.num_ipregs) - 1, None, 1]
+        if config.standardize_method is not None:
+            X_train, X_test = util.standardize(X_train, X_test, env.standardize_method)
+            self.X_train, self.X_test = np.array(X_train, dtype=np.float64), np.array(X_test, dtype=np.float64)
+        config.num_ipregs = len(self.X_train[0])
+        config.output_dims = len(self.classes)
+        config.max_vals = [const.GEN_REGS, max(const.GEN_REGS, config.num_ipregs), max(config.ops), 2]
 
     def set_classes(self, X, y):
-        self.data_by_classes = {}
         for cl in self.classes.values():
             self.data_by_classes[cl] = [X[i] for i in range(len(X)) if y[i] == cl]
 
 
-
-class Prog:
-    def __init__(self, prog):
-        self.prog = prog
-        self.effective_instrs = None
-        # Fitness for training eval on train, testing eval on train, testing eval on test
-        self.trainset_trainfit = None
-        self.trainset_testfit = None
-        self.testset_testfit = None
-        self.train_y_pred = None
+# class Prog:
+#     def __init__(self, prog):
+#         self.prog = prog
+#         self.effective_instrs = None
+#         # Fitness for training eval on train, testing eval on train, testing eval on test
+#         self.trainset_trainfit = None
+#         self.trainset_testfit = None
+#         self.testset_testfit = None
+#         self.train_y_pred = None
 
 
 '''
 Generating initial programs
 '''
-def gen_prog(prog_length, num_ipregs):
-    prog = [[],[],[],[]]
-    prog[const.TARGET] = np.random.randint(const.GEN_REGS, size=prog_length).tolist()
-    prog[const.SOURCE] = np.random.randint(max(const.GEN_REGS, env.num_ipregs), size=prog_length).tolist()
-    prog[const.OP] = np.random.choice(env.ops, size=prog_length).tolist()
-    prog[const.MODE] = np.random.randint(2, size=prog_length).tolist()
-    return Prog(prog)
 
 
-def gen_population(pop_num, num_ipregs):
-    pop = [gen_prog(const.PROG_LENGTH, env.num_ipregs) for n in range(0, pop_num)]
+def gen_prog(pr):
+    # List of desired program columns
+    if type(pr) == list:
+        assert len(pr) == 4
+        prog = vm.Prog([])
+        prog.prog = [
+            array('i', pr[0]),
+            array('i', pr[1]),
+            array('i', pr[2]),
+            array('i', pr[3])
+        ]
+        return prog
+
+    # Generate random program given a prog length
+    else:
+        assert type(pr) == int
+    prog = list(range(const.MODE + 1))
+    prog[const.TARGET] = array('i', np.random.randint(const.GEN_REGS, size=pr))
+    prog[const.SOURCE] = array('i', np.random.randint(max(const.GEN_REGS, env.num_ipregs), size=pr))
+    prog[const.OP] = array('i', np.random.choice(env.ops, size=pr))
+    prog[const.MODE] = array('i', np.random.randint(2, size=pr))
+    return vm.Prog(prog)
+
+
+def gen_population(pop_num):
+    pop = [gen_prog(const.PROG_LENGTH) for n in range(0, pop_num)]
     for p in pop:
-        p.effective_instrs = find_introns(p)
+        p.effective_instrs = fit.find_introns(p)
     return pop
 
-
-# Initializing data
-def load_data(fname, split=','):
-    data = []
-    with open(fname, 'r') as f:
-        for line in f:
-            l = line.split(split)
-            if l[-1][-1] == '\n':
-                l[-1] = l[-1][:-1]
-            data.append(l)
-    return data
-
-
-def get_classes(data):
-    classes = set(data)
-    classmap = {}
-    # Check for numeric classes
-    for i in range(len(classes)):
-        cl = classes.pop()
-        try:
-            classmap[cl] = int(cl)
-        except ValueError:
-            classmap[cl] = i
-    return classmap
-
-
-def standardize(data, method, alpha=1, vals=None):
-    m = np.asmatrix(data)
-    m_transpose = np.transpose(m)
-    if method is const.StandardizeMethod.MEAN_VARIANCE:
-        for col in range(len(data[0])):
-            if vals:
-                std = vals[0]
-                mean = vals[1]
-            else:
-                std = np.std(m_transpose[col])
-                mean = np.mean(m_transpose[col])
-            for row in range(len(data)):
-                m[row, col] = alpha*((m.item(row,col)-mean)/std)
-        return m.tolist(), std, mean
-
-    elif method is const.StandardizeMethod.LINEAR_TRANSFORM:
-        for col in range(len(data[0])):
-            if vals:
-                min_x = vals[0]
-                max_x = vals[1]
-            else:
-                max_x = max(m_transpose[col].tolist()[0])
-                min_x = min(m_transpose[col].tolist()[0])
-            for row in range(len(data)):
-                m[row, col] = alpha*((m.item(row,col)-min_x)/(max_x-min_x))
-        return m.tolist(), min_x, max_x
-    else:
-        raise AttributeError('Invalid standardize method')
-
-
-def preprocess(data):
-    for i in range(len(data)):
-        try:
-            data[i] = array('d', [float(x) for x in data[i]])
-        except ValueError:
-            preprocess(convert_non_num_data(data))
-    return data
-
-
-def convert_non_num_data(data):
-    attrs = []
-    for i in range (len(data)):
-        attrs += [attr for attr in data[i]]
-    attrs = list(set(attrs))
-    for i in range(len(data)):
-        data[i] = [attrs.index(attr)+1 for attr in data[i]]
-    return data
-
-
-def split_data(X, y, standardize_method, alpha=1, test_size=0.1):
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, stratify=y)
-    if standardize_method:
-        X_train, val0, val1 = standardize(X_train, standardize_method, alpha=alpha)
-        X_test = standardize(X_test, standardize_method, alpha=alpha, vals=[val0, val1])[0]
-    return X_train, X_test, y_train, y_test
-
-
-'''
-Fitness evaluation functions
-'''
-def accuracy(prog, y, y_pred, store_fitness=None):
-    acc = accuracy_score(y, y_pred)
-    if store_fitness:
-        setattr(prog, store_fitness, acc)
-    return acc
-
-
-#@profile
-def avg_detect_rate(prog, y, y_pred, store_fitness=None):
-    percentages = []
-    for cl in set(y):
-        cl_results = [i for i in range(len(y)) if y[i] == cl]
-        percentages.append(sum([1 for i in cl_results if y[i] == y_pred[i]])/len(cl_results))
-    fitness = np.mean(percentages)
-    if store_fitness:
-        setattr(prog, store_fitness, fitness)
-    return fitness
-
-# old fitness sharing func
-# def fitness_sharing(pop, X, y, store_fitness=None):
-#     training = (store_fitness == 'trainset_trainfit')
-#     all_y_pred = [predicted_classes(prog, X, fitness_sharing=training) for prog in pop]
-#     sum_fitness = 1+per_ex_fitness(y, all_y_pred)
-#     all_fitness = [per_ex_fitness(y, [all_y_pred[i]])/sum_fitness for i in range(len(pop))]
-#     return all_fitness
-#@profile
-
-def fitness_sharing(pop, X, y, store_fitness=None):
-    #training = (store_fitness == 'trainset_trainfit')
-    per_ex_fitnesses = [per_ex_fitness(prog, X, y) for prog in pop]
-    denom = sum(per_ex_fitnesses) + len(pop)
-    fitness = [f/denom for f in per_ex_fitnesses]
-    return fitness
-
-def per_ex_fitness(prog, X, y):
-    y_pred = predicted_classes(prog, X, fitness_sharing=True)
-    return sum([1 for i in range(len(y)) if y[i] == y_pred[i]])
 
 '''
 Results
 '''
 
-# prog thread
-# class progThread (threading.Thread):
-#    def __init__(self, threadID):
-#       threading.Thread.__init__(self)
-#       self.threadID = threadID
-#    def run(self):
-#       print "Starting " + self.name
-#       return predicted_classes(prog, X) if (prog.fitness is None or not training) else prog.fitness
-#
-# def print_time(threadName, counter, delay):
-#    while counter:
-#       if exitFlag:
-#          threadName.exit()
-#       time.sleep(delay)
-#       print "%s: %s" % (threadName, time.ctime(time.time()))
-#       counter -= 1
 
-
-#@profile
-def predicted_classes(prog, X, fitness_sharing=False):
-    if fitness_sharing and prog.train_y_pred is not None:
-        return prog.train_y_pred
-
-    y_pred = [output.index(max(output)) for output in [vm.run_prog(prog, ex) for ex in X]]
-    if fitness_sharing:
-        prog.train_y_pred = y_pred
-    return y_pred
-
-
-class EvalProg(threading.Thread):
-    def __init__(self, i, result_list, prog, X):
-        threading.Thread.__init__(self)
-        self.id = i
-        self.result_list = result_list
-        self.prog = prog
-        self.X = X
-    def run(self):
-        y_pred = predicted_classes(self.prog, self.X)
-        self.result_list[self.id] = y_pred
-
-
-import inspect
-def caller_name(skip=2):
-    """Get a name of a caller in the format module.class.method
-
-       `skip` specifies how many levels of stack to skip while getting caller
-       name. skip=1 means "who calls me", skip=2 "who calls my caller" etc.
-
-       An empty string is returned if skipped levels exceed stack height
-    """
-    stack = inspect.stack()
-    start = 0 + skip
-    if len(stack) < start + 1:
-      return ''
-    parentframe = stack[start][0]
-
-    name = []
-    module = inspect.getmodule(parentframe)
-    # `modname` can be None when frame is executed directly in console
-    # TODO(techtonik): consider using __main__
-    if module:
-        name.append(module.__name__)
-    # detect classname
-    if 'self' in parentframe.f_locals:
-        # I don't know any way to detect call from the object method
-        # XXX: there seems to be no way to detect static method call - it will
-        #      be just a function call
-        name.append(parentframe.f_locals['self'].__class__.__name__)
-    codename = parentframe.f_code.co_name
-    if codename != '<module>':  # top level usually
-        name.append( codename ) # function or a method
-
-    ## Avoid circular refs and frame leaks
-    #  https://docs.python.org/2.7/library/inspect.html#the-interpreter-stack
-    del parentframe, stack
-
-    return ".".join(name)
-
-
-#@profile
+# @profile
 def get_fitness_results(pop, X, y, fitness_eval, store_fitness=None):
-    #results = [fitness_eval(prog, y, predicted_classes(prog, X, v)) if (prog.fitness is None or not training) else prog.fitness for prog in pop]
+    # results = [fitness_eval(prog, y, predicted_classes(prog, X, v)) if (prog.fitness is None or not training) else prog.fitness for prog in pop]
     if fitness_eval.__name__ == 'fitness_sharing':
-        if (store_fitness is None) or (getattr(pop[0], store_fitness) is None):
-            results = fitness_eval(pop, X, y, store_fitness=store_fitness)
-        else:
-            # TODO: When is this saved??
-            results = [getattr(prog, store_fitness) for prog in pop]
-
+        results = fit.fitness_sharing(pop, X, y)
     else:
-        results = [fitness_eval(prog, y, predicted_classes(prog, X), store_fitness=store_fitness)
-                   if (store_fitness is None or env.use_subset or getattr(prog, store_fitness) is None)
-                   else getattr(prog, store_fitness) for prog in pop]
+        # all_y_pred = vm.y_pred(np.array(pop), np.array(X), 0).tolist()
+        all_y_pred = vm.y_pred(pop, X)
+        # results = [fitness_eval(prog, y, predicted_classes(prog, X), store_fitness=store_fitness)
+        #            if ((store_fitness is None) or getattr(prog, store_fitness) == -1)
+        #            else getattr(prog, store_fitness) for prog in pop]
 
-        # Speed testing:
-
-        # results=[]
-        # for prog in pop:
-        #     if (store_fitness is None):
-        #         c = predicted_classes(prog, X)
-        #         fit = fitness_eval(prog, y, c)
-        #         results.append(fit)
-        #     elif getattr(prog, store_fitness) is None:
-        #         c = predicted_classes(prog, X)
-        #         fit = fitness_eval(prog, y, c,  store_fitness=store_fitness)
-        #         results.append(fit)
-        #     else:
-        #         fit=getattr(prog, store_fitness)
-        #         results.append(fit)
+        results = [fitness_eval(pop[i], y, all_y_pred[i]) for i in range(len(pop))]
     return results
-
-# Processes
-# def fitness_results(prog, X, y, fitness_eval, store_fitness=None, l=None):
-#     if fitness_eval == fitness_sharing:
-#         if (store_fitness is None) or (getattr(pop[0], store_fitness) is None):
-#             results = fitness_eval(pop, X, y, store_fitness=store_fitness)
-#         else:
-#             results = [getattr(prog, store_fitness) for prog in pop]
-#
-#
-#     else:
-#         results = [fitness_eval(prog, y, predicted_classes(prog, X), store_fitness=store_fitness)
-#                    if (store_fitness is None or env.use_subset or getattr(prog, store_fitness) is None)
-#                    else getattr(prog, store_fitness) for prog in pop]
-#
-#
-# from multiprocessing import Process, Value, Array
-# def get_fitness_results(pop, X, y, fitness_eval, store_fitness=None):
-#      arr = Array('d', [0]*len(pop))
-#
-#     if fitness_eval == fitness_sharing:
-#         if (store_fitness is None) or (getattr(pop[0], store_fitness) is None):
-#             results = fitness_results(pop, X, y, fitness_eval, store_fitness=store_fitness, l=)
-#         else:
-#             results = [getattr(prog, store_fitness) for prog in pop]
-#
-#
-#     else:
-#         arr = [get_attr(prog, store_fitness) if not (store_fitness is None or env.use_subset or getattr(prog, store_fitness) is None) else 0 for prog in pop]
-#         results = [fitness_eval(prog, y, predicted_classes(prog, X), store_fitness=store_fitness)
-#                    if (store_fitness is None or env.use_subset or getattr(prog, store_fitness) is None)
-#                    else getattr(prog, store_fitness) for prog in pop]
-#     return results
 
 
 '''
 Variation operators
 '''
-#@profile
+
+
+# @profile
 # Recombination - swap sections of 2 programs
 def recombination(progs):
-    progs = copy.deepcopy(progs)
+    # progs = copy.deepcopy(progs)
+    progs = [progs[0].copy(), progs[1].copy()]
     assert len(progs) == 2
     prog0, prog1 = progs[0].prog, progs[1].prog
     prog_len = len(prog0[0])
-    start_index = random.randint(0, prog_len-2)
-    end_limit = prog_len-1 if start_index is 0 else prog_len # avoid swapping whole program
-    end_index = random.randint(start_index+1, end_limit)
+    start_index = random.randint(0, prog_len - 2)
+    end_limit = prog_len - 1 if start_index is 0 else prog_len  # avoid swapping whole program
+    end_index = random.randint(start_index + 1, end_limit)
 
     for col in range(len(prog0)):
-        prog1[col][start_index:end_index], prog0[col][start_index:end_index] = prog0[col][start_index:end_index], prog1[col][start_index:end_index]
-    for prog in progs:
-        check_fitness_after_variation(prog, list(range(start_index, end_index)))
+        prog1[col][start_index:end_index], prog0[col][start_index:end_index] = prog0[col][start_index:end_index], prog1[
+                                                                                                                      col][
+                                                                                                                  start_index:end_index]
+    # for prog in progs:
+    #     check_fitness_after_variation(prog, list(range(start_index, end_index)))
     return [progs[0], progs[1]]
 
 
-#@profile
+# @profile
 # Mutation - change 1 value in the program
-def mutation(progs, effective_mutations=True):
+def mutation(progs, effective_mutations=False):
     step_size = 1
     min_lines, max_lines = 1, len(progs[0].prog[0])
-    min_lines, max_lines = 1, 1
 
-    progs = copy.deepcopy(progs)
+    # One prog input for mutation
+    progs = [progs[0].copy()]
     children = []
     for prog in progs:
         # Test - effective mutations
         if effective_mutations:
-            if prog.effective_instrs is None:
-                find_introns(prog)
+            if prog.effective_instrs[0] == -1:
+                fit.find_introns(prog)
             num_lines = random.randint(min_lines, min(max_lines, len(prog.effective_instrs)))
             lines = np.random.choice(prog.effective_instrs, size=num_lines, replace=False)
         else:
             num_lines = random.randint(min_lines, max_lines)
             lines = np.random.choice(list(range(max_lines)), size=num_lines, replace=False)
         for index in lines:
-            col = random.randint(0, len(prog.prog)-1)
+            col = random.randint(0, len(prog.prog) - 1)
             orig_val = prog.prog[col][index]
-            new_val = orig_val
+            # new_val = orig_val
             if col == const.OP:
-                options = env.ops[:]
-                options.remove(orig_val)
-                new_val = np.random.choice(options)
+                options = [x for x in env.ops if x != orig_val]
+                # new_val = np.random.choice(options)
             #
             # elif (col == const.TARGET) and effective_mutations:
             #     options = set([prog.prog[const.TARGET][i] for i in prog.effective_instrs]).difference(set([orig_val]))
             #     new_val = np.random.choice(options)
 
             else:
-                while new_val == orig_val:
-                    if new_val == 0:
-                        op = 0
-                    elif (new_val == env.max_vals[col]):
-                        op = 1
-                    else:
-                        op = random.randint(0, 1)
-                    new_val = (orig_val+step_size) if op is 0 else (orig_val-step_size)
+                # while new_val == orig_val:
+                #     if new_val == 0:
+                #         op = 0
+                #     elif (new_val == env.max_vals[col]):
+                #         op = 1
+                #     else:
+                #         op = random.randint(0, 1)
+                # new_val = (orig_val+step_size) if op is 0 else (orig_val-step_size)
+                # Use all vals or use 1-step vals?
+                # pdb.set_trace()
+                options = [x for x in range(env.max_vals[col]) if x != orig_val]
+            new_val = np.random.choice(options)
             prog.prog[col][index] = new_val
-        check_fitness_after_variation(prog, lines)
+        # check_fitness_after_variation(prog, lines)
         children.append(prog)
     return children
 
@@ -437,12 +229,14 @@ def mutation(progs, effective_mutations=True):
 '''
 Selection
 '''
-#@profile
+
+
+# @profile
 # Steady state tournament for selection
-def tournament(X, y, pop, fitness_eval, var_op_probs = [0.5, 0.5]):
+def tournament(X, y, pop, fitness_eval, var_op_probs=[0.5, 0.5]):
     indivs = set()
     while len(indivs) < const.TOURNAMENT_SIZE:
-        indivs.add(random.randint(0, len(pop)-1))
+        indivs.add(random.randint(0, len(pop) - 1))
     selected_i = list(indivs)
     results = get_fitness_results([pop[i] for i in selected_i], X, y, fitness_eval=fitness_eval,
                                   store_fitness='trainset_trainfit')
@@ -457,43 +251,38 @@ def tournament(X, y, pop, fitness_eval, var_op_probs = [0.5, 0.5]):
     for i in sorted(losers_i, reverse=True):
         del pop[i]
 
-    var_op = np.random.choice([0,1], p=var_op_probs)
+    var_op = np.random.choice([0, 1], p=var_op_probs)
     if var_op == 0:
-        progs = mutation(parents)
+        progs = mutation([parents[0]]) + mutation([parents[1]])
     elif var_op == 1:
         progs = recombination(parents)
 
-    for p in progs:
-        p.orig=False
     pop += progs
-
-    if fitness_eval.__name__ == 'fitness_sharing':
-        for prog in pop[-2:]:
-            if getattr(prog, 'train_y_pred') is None:
-                if env.test_fitness_eval != env.train_fitness_eval:
-                    for p in pop:
-                        p.train_y_pred = None
-                else:
-                    clear_attrs(pop)
-                break
+    # if fitness_eval.__name__ == 'fitness_sharing':
+    #     for prog in pop[-2:]:
+    #         if getattr(prog, 'train_y_pred')[0] == -1:
+    #             clear_attrs(pop)
+    #             break
 
     return pop
 
 
 # Breeder model for selection
+# @profile
 def breeder(X, y, pop, fitness_eval, gap=0.2, var_op_probs=[0.5, 0.5]):
     env.pop_size = len(pop)
     results = get_fitness_results(pop, X, y, fitness_eval=fitness_eval, store_fitness='trainset_trainfit')
     ranked_index = get_ranked_index(results)
-    partition = len(pop) - int(len(pop)*gap)
+    partition = len(pop) - int(len(pop) * gap)
     top_i = ranked_index[-partition:]
     new_pop = [pop[i] for i in top_i]
+    cleared_attrs = 0
 
     while len(new_pop) < env.pop_size:
-        if len(new_pop) == (env.pop_size-1):
+        if len(new_pop) == (env.pop_size - 1):
             var_op = 0
         else:
-            var_op = np.random.choice([0,1], p=var_op_probs)
+            var_op = np.random.choice([0, 1], p=var_op_probs)
 
         if var_op == 0:
             parents_i = [np.random.choice(top_i)]
@@ -503,33 +292,20 @@ def breeder(X, y, pop, fitness_eval, gap=0.2, var_op_probs=[0.5, 0.5]):
             progs = recombination([pop[i] for i in parents_i])
         new_pop += progs
 
-    if fitness_eval.__name__ == 'fitness_sharing':
-        for prog in new_pop[partition:]:
-            if getattr(prog, 'train_y_pred') is None:
-                if env.test_fitness_eval != env.train_fitness_eval:
-                    for p in pop:
-                        p.train_y_pred = None
-                else:
-                    clear_attrs(pop)
-                break
+        # if not cleared_attrs and fitness_eval.__name__ == 'fitness_sharing':
+        #     for prog in progs:
+        #         if getattr(prog, 'train_y_pred')[0] == -1:
+        #             cleared_attrs = 1
+        #             clear_attrs(new_pop)
+        #             break
 
     return new_pop
 
 
-def clear_attrs(progs, clear_y_pred=False):
-    for prog in progs:
-        prog.trainset_trainfit = None
-        prog.trainset_testfit = None
-        prog.testset_testfit = None
-
-        if clear_y_pred:
-            prog.train_y_pred = None
-
-
-#@profile
+# @profile
 def check_fitness_after_variation(prog, instrs_changed):
     orig_eff_instrs = prog.effective_instrs
-    effective_instrs = find_introns(prog)
+    effective_instrs = fit.find_introns(prog)
 
     if np.array_equal(effective_instrs, orig_eff_instrs) and set(instrs_changed).isdisjoint(orig_eff_instrs):
         pass
@@ -537,34 +313,32 @@ def check_fitness_after_variation(prog, instrs_changed):
         clear_attrs([prog], clear_y_pred=True)
 
 
-#@profile
-def run_model(X, y, pop, selection, generations, fitness_eval, X_test=None, y_test=None, X_valid=None, y_valid=None,
-              show_graph=1):
+# @profile
+def run_model(X, y, pop, selection, generations, X_test=None, y_test=None):
+    start = time.time()
+    filename_prefix = filenum()
+    validation = (env.use_validation and env.use_subset)
+    max_fitness_gen, max_fitness = 0, 0
+    # Components to graph
     to_graph = {
-        'top_trainfit_in_trainset': 1,
-        'train_means': None,
-        'test_means': 1,
-        'top_train_prog_on_test': 1,
-        'top_test_fit_on_train': 1,
+        'top_trainfit_in_trainset': 1,  # Top training fitness value in training set
+        'train_means': None,  # Mean of training fitness values in training set
+        'test_means': 1,  # Mean of testing fitness values in training set
+        'top_train_prog_on_test': 1,  # Testing fitness on test set of top training fitness prog in training set
+        'top_test_fit_on_train': 1,  # Testing fitness on train set of top training fitness prog in training set
         'percentages': 1
     }
     to_graph['train_means'] = to_graph['top_trainfit_in_trainset']
 
     if to_graph['percentages']:
         percentages = {}
-        for cl in env.classes:
+        for cl in data.classes:
             percentages[cl] = []
 
-    graph_step = env.graph_step
-    test_fitness_eval = env.test_fitness_eval
     trainset_results_with_trainfit, trainset_results_with_testfit, testset_results_with_testfit = [], [], []
     trainfit_trainset_means, testfit_trainset_means, top_trainfit_in_trainset, top_prog_testfit_on_testset, top_testfit_in_trainset = [], [], [], [], []
-    validation = (X_valid is not None) and (y_valid is not None)
     print_info()
 
-    # print('Start fitness: ')
-    # results = get_fitness_results(pop, X, y, env.test_fitness_eval)
-    # print('{}:  max({}): {}\tmean:{}'.format(1, results.index(max(results)), max(results), (sum(results) / float(len(results)))))
     if selection == const.Selection.STEADY_STATE_TOURN:
         select = tournament
     elif selection == const.Selection.BREEDER_MODEL:
@@ -573,24 +347,22 @@ def run_model(X, y, pop, selection, generations, fitness_eval, X_test=None, y_te
         raise ValueError('Invalid selection: {}'.format(selection))
 
     for i in range(env.generations):
+        assert len(pop) == env.pop_size
         print('.', end='')
         sys.stdout.flush()
-        assert len(pop) == env.pop_size
 
+        # Re-sample from validation and training sets if using subsets
         if env.use_subset:
-            if i == 0:
-                orig_X, orig_y = X, y
-                orig_Xvalid, orig_yvalid = X_valid, y_valid
-            X, y = env.subset_sampling(orig_X, orig_y, env.subset_size)
-            #if (X_valid is not None and y_valid is not None):
-                #X_valid, y_valid = env.subset_sampling(orig_Xvalid, orig_yvalid, env.validation_size)
-        pop = select(X, y, pop, fitness_eval)
+            X, y = env.subset_sampling(data, env.subset_size)
+            # TODO: remove train examples from this? (use prev. valid data?)
+            if validation:
+                X_valid, y_valid = env.subset_sampling(data, env.validation_size)
+        pop = select(X, y, pop, env.train_fitness_eval)
 
-
-        if (i % graph_step == 0) or (i == (env.generations-1)):
+        # Run train/test fitness evaluations for data to be graphed
+        if (i % env.graph_step == 0) or (i == (env.generations - 1)):
             if to_graph['top_trainfit_in_trainset'] or (env.train_fitness_eval == env.test_fitness_eval):
-                trainset_results_with_trainfit = get_fitness_results(pop, X, y, fitness_eval=env.train_fitness_eval,
-                                                                     store_fitness='trainset_trainfit')
+                trainset_results_with_trainfit = get_fitness_results(pop, X, y, fitness_eval=env.train_fitness_eval)
                 top_trainfit_in_trainset.append(max(trainset_results_with_trainfit))
                 trainfit_trainset_means.append(np.mean(trainset_results_with_trainfit))
 
@@ -600,67 +372,71 @@ def run_model(X, y, pop, selection, generations, fitness_eval, X_test=None, y_te
                     xvals, yvals = X_valid, y_valid
                 else:
                     xvals, yvals = X, y
-                trainset_results_with_testfit = get_fitness_results(pop, xvals, yvals, fitness_eval=test_fitness_eval,
-                                                                    store_fitness='trainset_testfit')
+                trainset_results_with_testfit = get_fitness_results(pop, xvals, yvals,
+                                                                    fitness_eval=env.test_fitness_eval)
                 top_testfit_in_trainset.append(max(trainset_results_with_testfit))
                 testfit_trainset_means.append(np.mean(trainset_results_with_testfit))
 
-            if (X_test and y_test) and to_graph['top_train_prog_on_test']:
+            if (X_test is not None and y_test is not None) and to_graph['top_train_prog_on_test']:
                 if env.train_fitness_eval == env.test_fitness_eval:
                     trainset_results_with_testfit = trainset_results_with_trainfit
                 testset_results_with_testfit = get_fitness_results([get_top_prog(pop, trainset_results_with_testfit)],
-                                                                   X_test, y_test, fitness_eval=test_fitness_eval,
-                                                                   store_fitness='testset_testfit')[0]
+                                                                   X_test, y_test, fitness_eval=env.test_fitness_eval)[
+                    0]
                 top_prog_testfit_on_testset.append(testset_results_with_testfit)
-
+                if testset_results_with_testfit > max_fitness:
+                    max_fitness = testset_results_with_testfit
+                    max_fitness_gen = i
             if to_graph['percentages']:
-                cp = class_percentages(get_top_prog(pop, trainset_results_with_testfit), X_test, y_test, env.classes)
+                cp = fit.class_percentages(get_top_prog(pop, trainset_results_with_testfit), X_test, y_test,
+                                           data.classes)
                 for p in cp:
                     percentages[p].append(cp[p])
 
+        if ((env.graph_save_step is not None) and (i % env.graph_save_step == 0)) or (i == env.generations - 1):
+            # Get graph parameters for graphing function - set to None to not display a graph component
+            graphparam = [top_trainfit_in_trainset, trainfit_trainset_means, testfit_trainset_means,
+                          top_prog_testfit_on_testset, top_testfit_in_trainset]
+            graph_inc = [to_graph['top_trainfit_in_trainset'], to_graph['train_means'], to_graph['test_means'],
+                         to_graph['top_train_prog_on_test'], to_graph['top_test_fit_on_train']]
+            graphparam = list(map(lambda x: graphparam[x] if graph_inc[x] else None, range(len(graphparam))))
+            graph(filename_prefix, env.graph_step, env.generations - 1, graphparam[0], graphparam[1], graphparam[2],
+                  graphparam[3],
+                  graphparam[4])
 
+            if to_graph['percentages']:
+                graph_percs(filename_prefix, env.graph_step, env.generations - 1, percentages)
+    plt.close('all')
 
-    # print('End fitness: ')
-    # results = get_fitness_results(pop, X, y, env.test_fitness_eval)
-    # print('{}:  max({}): {}\tmean:{}'.format(1, results.index(max(results)), max(results), sum(results) / float(len(results))))
-    if show_graph:
-        graphparam = [top_trainfit_in_trainset, trainfit_trainset_means, testfit_trainset_means,
-                        top_prog_testfit_on_testset, top_testfit_in_trainset]
-        graph_inc = [to_graph['top_trainfit_in_trainset'], to_graph['train_means'], to_graph['test_means'],
-                     to_graph['top_train_prog_on_test'], to_graph['top_test_fit_on_train']]
-        graphparam = list(map(lambda x: graphparam[x] if graph_inc[x] else None, range(len(graphparam))))
-        graph(graph_step, env.generations-1, graphparam[0], graphparam[1], graphparam[2], graphparam[3], graphparam[4])
-
-        if to_graph['percentages']:
-            graph_percs(graph_step, env.generations-1, percentages)
+    # print_stats(pop, trainset_results_with_testfit, testset_results_with_testfit, top_prog_testfit_on_testset)
+    print("Max fitness: {} at generation {}".format(max_fitness, max_fitness_gen))
+    print("\nTime: {}".format(time.time() - start))
     return pop, trainset_results_with_trainfit, trainset_results_with_testfit, testset_results_with_testfit
 
 
-def even_data_subset(X, y, subset_size):
-    if not env.data_by_classes:
-        env.set_classes(X, y)
+def print_stats(pop, train_results_with_test_fit, test_results_with_test_fit, test_result_with_test_fit):
+    print('\nTop program (from train_fitness on training set):')
+    print('Test_fitness on test set: {} \nTest_fitness on train set: {}'.format(test_result_with_test_fit,
+                                                                                max(train_results_with_test_fit)))
 
-    subset_size = int(subset_size / len(env.classes))
-    subset_x, subset_y = [], []
+    top_prog = get_top_prog(pop, train_results_with_test_fit)
+    train_cl = fit.class_percentages(top_prog, data.X_train, data.y_train, data.classes)
+    test_cl = fit.class_percentages(top_prog, data.X_test, data.y_test, data.classes)
+    print('Test class percentages: {}\nTrain class percentages (all training): {}'.format(test_cl, train_cl))
 
-    for i in env.data_by_classes:
-        class_size = len(env.data_by_classes[i])
-        if class_size <= subset_size:
-            subset_size = class_size
-            subset_x += env.data_by_classes[i]
-        else:
-            subset_x += train_test_split(env.data_by_classes[i], train_size=(subset_size/class_size))[0]
-        subset_y += [i]*subset_size
-    return subset_x, subset_y
+    test_fit_on_test = get_fitness_results(pop, data.X_test, data.y_test, fitness_eval=env.test_fitness_eval,
+                                           store_fitness='testset_testfit')
+    top_test_result = max(test_fit_on_test)
+    top_result_i = test_fit_on_test.index(top_test_result)
+    top_prog_from_test_on_train = get_fitness_results([pop[top_result_i]], data.X_train, data.y_train,
+                                                      env.test_fitness_eval, store_fitness='trainset_testfit')[0]
 
-def uniformprob_data_subset(X, y, subset_size):
-    if not env.data_by_classes:
-        env.set_classes(X, y)
-    subset_x, temp, subset_y, temp = train_test_split(X, y, train_size=(subset_size / len(X)))
-    return subset_x, subset_y
+    print('\nTop program (from test_fitness on test set):')
+    print('Top test_fitness in test set: {} \nTest_fitness on train set for top: {}'.format(top_test_result,
+                                                                                            top_prog_from_test_on_train))
 
 
-def graph(graph_step, last_x, top_train_fit_on_train=None, train_means=None, test_means=None,
+def graph(n, graph_step, last_x, top_train_fit_on_train=None, train_means=None, test_means=None,
           top_train_prog_on_test=None, top_test_fit_on_train=None):
     gens = [i for i in range(env.generations) if (i % graph_step == 0)]
     if gens[-1] != last_x:
@@ -668,7 +444,7 @@ def graph(graph_step, last_x, top_train_fit_on_train=None, train_means=None, tes
 
     fig = plt.figure(figsize=(13, 13), dpi=80)
     ax = fig.add_subplot(111)
-    valid_train = 'Validation' if env.use_subset else 'Train'
+    valid_train = 'Validation' if env.use_validation else 'Train'
     labels = [
         'Max Train Fitness in Train Set', 'Mean Train Fitness in Train Set', 'Mean Test Fitness in Train Set',
         'Best {} Prog on Test Set (using test_fit)'.format(valid_train),
@@ -680,32 +456,39 @@ def graph(graph_step, last_x, top_train_fit_on_train=None, train_means=None, tes
         ax.plot(gens, train_means, label=labels[1])
     if test_means:
         ax.plot(gens, test_means, label=labels[2])
-    if top_train_prog_on_test:
-        ax.plot(gens, top_train_prog_on_test, label=labels[3])
     if top_test_fit_on_train:
         ax.plot(gens, top_test_fit_on_train, label=labels[4])
+    if top_train_prog_on_test:
+        ax.plot(gens, top_train_prog_on_test, label=labels[3])
 
     subset_str = ', Subset Size: {}'.format(env.subset_size) if env.use_subset else ''
     valid_str = ''
     if env.use_validation:
         valid_str = ', Validation Size: {}'.format(env.validation_size)
+    op_str = ', '.join([const.OPS[x] for x in env.ops])
     plt.title('Data: {}\nSelection: {}\nPop Size: {}, Generations: {}, Step Size: {}{}{}\nTraining Fitness: {}, '
-              'Test Fitness: {}'.format(env.data_file, env.selection.value, env.pop_size, env.generations,
-                                        env.graph_step, subset_str, valid_str, env.train_fitness_eval.__name__,
-                                        env.test_fitness_eval.__name__))
+              'Test Fitness: {}\nOps: {}, Alpha: {}'.format(env.data_file, env.selection.value, env.pop_size,
+                                                            env.generations,
+                                                            env.graph_step, subset_str, valid_str,
+                                                            env.train_fitness_eval.__name__,
+                                                            env.test_fitness_eval.__name__, op_str, env.alpha))
     plt.legend(loc=9, bbox_to_anchor=(0.5, -0.03), fontsize=8)
     plt.grid(which='both', axis='both')
     ax.set_xlim(xmin=0)
-    if not (train_means or top_train_fit_on_train):
-        ax.set_ylim(ymax=1.1)
+    ax.set_ylim(ymax=1.02)
+    ax.set_ylim(ymin=0)
     ax.yaxis.set_major_locator(MultipleLocator(.1))
-    ax.yaxis.set_minor_locator(AutoMinorLocator(2))
-    ax.xaxis.set_minor_locator(AutoMinorLocator())
+    ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+    ax.xaxis.set_minor_locator(AutoMinorLocator(5))
     plt.tick_params(which='both', width=1)
-    plt.show()
+
+    if TESTING == 0:
+        filename = '{}{}_fitness.png'.format(const.IMAGE_DIR, n)
+        fig.savefig(filename)
+        print('Saved file: {}'.format(filename))
 
 
-def graph_percs(graph_step, last_x, percentages):
+def graph_percs(n, graph_step, last_x, percentages):
     generations = [i for i in range(env.generations) if (i % graph_step == 0)]
     if generations[-1] != last_x:
         generations.append(last_x)
@@ -715,38 +498,55 @@ def graph_percs(graph_step, last_x, percentages):
     labels = sorted([perc for perc in percentages])
     for l in labels:
         ax.plot(generations, percentages[l], label=l)
-    plt.title('% Classes Correct')
-    plt.legend(bbox_to_anchor=(1.09, 1), fontsize=8)
+    plt.title('% Classes Correct (Training data: {})'.format(env.data_file))
+    plt.legend(bbox_to_anchor=(1.1, 1), fontsize=8)
     plt.grid(which='both', axis='both')
     ax.set_xlim(xmin=0)
-    plt.show()
+    ax.set_ylim(ymax=1.02)
+    ax.set_ylim(ymin=0)
+    ax.yaxis.set_major_locator(MultipleLocator(.1))
+    ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+    ax.xaxis.set_minor_locator(AutoMinorLocator(5))
+    plt.tick_params(which='both', width=1)
+
+    if TESTING == 0:
+        filename = '{}{}_classes.png'.format(const.IMAGE_DIR, n)
+        fig.savefig(filename)
+        print('Saved file: {}'.format(filename))
 
 
-#@profile
+def filenum():
+    with shelve.open('config') as c:
+        try:
+            c['num'] += 1
+        except KeyError:
+            c['num'] = 0
+        n = c['num']
+    return n
+
+
+# @profile
 def get_average_fitness(env, num_trials, train_fitness_eval, test_fitness_eval=None):
     if not test_fitness_eval:
         test_fitness_eval = train_fitness_eval
 
-    training = (train_fitness_eval == test_fitness_eval)
-    max_test_fitness_on_train , mean_test_fitness_on_train, top_train_prog_on_test, valid_test_fitness, top_test_fitness_on_train = [], [], [], [], []
-    top_test_fitness, valid_train_fitness = [], []
-
-    validation = env.use_validation
-    if validation:
-        X_train, X_valid, y_train, y_valid = split_data(env.X_train, env.y_train, None)
-    else:
-        X_valid, y_valid = None, None
-        X_train, y_train = env.X_train, env.y_train
-    X_test, y_test = env.X_test, env.y_test
+    max_test_fitness_on_train, mean_test_fitness_on_train, top_test_fitness_on_train, = [], [], []
+    top_test_fitness, top_train_prog_on_test = [], []
 
     for i in range(num_trials):
-        print('Trial: {}'.format(i+1))
-        pop = gen_population(env.pop_size, env.num_ipregs)
-        pop, train_results_with_train_fit, train_results_with_test_fit, test_result_with_test_fit = run_model(X_train, y_train, pop,
-                                                                                                              env.selection, env.generations,
-                                                                                                              train_fitness_eval,
-                                                                                                              X_test=X_test, y_test=y_test,
-                                                                                                              X_valid=X_valid, y_valid=y_valid)
+        # New train/test data split for each trial if train/test data isn't pre-split
+        try:
+            const.TEST_DATA_FILES[env.data_file]
+        except KeyError:
+            env.load_data()
+
+        print('Trial: {}'.format(i + 1))
+        pop = gen_population(env.pop_size)
+        pop, train_results_with_train_fit, train_results_with_test_fit, test_result_with_test_fit = run_model(
+            data.X_train, data.y_train, pop,
+            env.selection, env.generations,
+            X_test=data.X_test,
+            y_test=data.y_test)
 
         max_test_fitness_on_train.append(max(train_results_with_test_fit))
         mean_test_fitness_on_train.append(np.mean(train_results_with_test_fit))
@@ -756,18 +556,18 @@ def get_average_fitness(env, num_trials, train_fitness_eval, test_fitness_eval=N
         print('Test_fitness on test set: {} \nTest_fitness on train set: {}'.format(test_result_with_test_fit,
                                                                                     max(train_results_with_test_fit)))
 
-
         top_prog = get_top_prog(pop, train_results_with_test_fit)
-        train_cl = class_percentages(top_prog, X_train, y_train, env.classes)
-        test_cl = class_percentages(top_prog, X_test, y_test, env.classes)
-        print('Test class percentages: {}\nTrain class percentages: {}'.format(test_cl, train_cl))
+        train_cl = fit.class_percentages(top_prog, data.X_train, data.y_train, data.classes)
+        test_cl = fit.class_percentages(top_prog, data.X_test, data.y_test, data.classes)
+        print('Test class percentages: {}\nTrain class percentages (all training): {}'.format(test_cl, train_cl))
 
-        test_fit_on_test = get_fitness_results(pop, X_test, y_test, fitness_eval=test_fitness_eval,
+        test_fit_on_test = get_fitness_results(pop, data.X_test, data.y_test, fitness_eval=test_fitness_eval,
                                                store_fitness='testset_testfit')
         top_test_result = max(test_fit_on_test)
         top_result_i = test_fit_on_test.index(top_test_result)
-        top_prog_from_test_on_train = get_fitness_results([pop[top_result_i]], X_train, y_train, test_fitness_eval,
-                                                          store_fitness='trainset_testfit')[0]
+        top_prog_from_test_on_train = \
+        get_fitness_results([pop[top_result_i]], data.X_train, data.y_train, test_fitness_eval,
+                            store_fitness='trainset_testfit')[0]
         top_test_fitness.append(top_test_result)
         top_test_fitness_on_train.append(top_prog_from_test_on_train)
 
@@ -775,69 +575,23 @@ def get_average_fitness(env, num_trials, train_fitness_eval, test_fitness_eval=N
         print('Top test_fitness in test set: {} \nTest_fitness on train set for top: {}'.format(top_test_result,
                                                                                                 top_prog_from_test_on_train))
 
-        if validation:
-            # valid_fitness_eval = fitness_eval
-            # results = get_fitness_results(pop, X_valid, y_valid, fitness_eval=valid_fitness_eval)
-            # top_prog = get_top_prog(pop, results)
-            # test_results = get_fitness_results([top_prog], X_test, y_test, valid_fitness_eval)
-            # valid_score = get_fitness_results([top_prog], X_train, y_train, fitness_eval=valid_fitness_eval)
-            #
-            # test_acc = get_fitness_results([top_prog], X_test, y_test, fitness_eval=avg_detect_rate)[0]
-            # train_acc = get_fitness_results([top_prog], X_train, y_train, fitness_eval=avg_detect_rate)[0]
-            # valid_test_fitness.append(test_acc)
-            # valid_train_fitness.append(train_acc)
-            # print('Top fitness on validation data: {} (Acc: {}) \nScore on train data for top: {} (Acc: {})'.format(test_results[0], test_acc, valid_score, train_acc))
-            pass
-
-    avg_max, avg_mean, avg_test = np.mean(max_test_fitness_on_train), np.mean(mean_test_fitness_on_train), np.mean(top_train_prog_on_test)
+    avg_max, avg_mean, avg_test = np.mean(max_test_fitness_on_train), np.mean(mean_test_fitness_on_train), np.mean(
+        top_train_prog_on_test)
     avg_top_test, avg_top_on_train = np.mean(top_test_fitness), np.mean(top_test_fitness_on_train)
 
     print('\nTrials: {}\nAverage max test_fitness on train: {}\nAverage mean test_fitness on train: {}\n'
           'Average test_fitness on test: {}\n'.format(num_trials, avg_max, avg_mean, avg_test))
     print('Average top test_fitness on test: {}\n'
-          'Average top test_fitness on train, from top test_fitness on test: {}\n'.format(avg_top_test, avg_top_on_train))
-    if validation:
-        avg_valid_test, avg_top_valid_on_train = np.mean(valid_test_fitness), np.mean(valid_train_fitness)
-        print('Average test acc from top valid: {}\n'
-              'Average top valid program acc on training: {}\n'.format(avg_valid_test, avg_top_valid_on_train))
+          'Average top test_fitness on train, from top test_fitness on test: {}\n'.format(avg_top_test,
+                                                                                          avg_top_on_train))
 
 
 def get_ranked_index(results):
-    return [x[0] for x in sorted(enumerate(results), key=lambda i:i[1])]
+    return [x[0] for x in sorted(enumerate(results), key=lambda i: i[1])]
 
 
 def get_top_prog(pop, results):
     return pop[get_ranked_index(results)[-1]]
-
-
-def run_top_prog(results, X_test, y_test, pop, fitness_eval):
-    top_prog = get_top_prog(pop, results)
-    results0 = get_fitness_results([top_prog], X_test, y_test, fitness_eval)
-    results1 = get_fitness_results([top_prog], X_train, y_train, fitness_eval)
-    print('Fitness on test data: {}\nFitness on orig data: {}'.format(results0[0], results1[0]))
-    all_results = get_fitness_results(pop, X_test, y_test, fitness_eval)
-    top_result = max(all_results)
-    top_result_i = all_results.index(max(all_results))
-    pop_score = get_fitness_results([pop[top_result_i]], X_train, y_train, fitness_eval, training=True)
-    print('Top fitness on test data: {} \nScore on orig data for top: {}'.format(top_result, pop_score))
-    return top_prog
-
-
-def find_introns(prog):
-    instrs = vm.find_introns(prog.prog[const.TARGET], prog.prog[const.SOURCE], prog.prog[const.MODE])
-    prog.effective_instrs = instrs
-    return instrs
-
-
-def class_percentages(prog, X, y, classes):
-    percentages = {}
-    y_pred = predicted_classes(prog, X)
-
-    for cl in classes:
-        cl_results = [i for i in range(len(y)) if y[i] == classes[cl]]
-        perc = sum([1 for i in cl_results if y[i] == y_pred[i]])/len(cl_results)
-        percentages[cl] = perc
-    return percentages
 
 
 def print_info():
@@ -845,10 +599,15 @@ def print_info():
           'Alpha: {}\n'.format(env.pop_size, env.generations, env.data_file, env.selection.name, env.alpha))
 
 
-#@profile
+# @profile
 def main():
     trials = 1
-    get_average_fitness(env, trials, train_fitness_eval=env.train_fitness_eval, test_fitness_eval=env.test_fitness_eval)
+    # get_average_fitness(env, trials, train_fitness_eval=env.train_fitness_eval, test_fitness_eval=env.test_fitness_eval)
+    pop = gen_population(env.pop_size)
+    run_model(data.X_train, data.y_train, pop,
+              env.selection, env.generations,
+              X_test=data.X_test,
+              y_test=data.y_test)
 
 
 def init_vm():
@@ -856,9 +615,12 @@ def init_vm():
 
 
 env = Config()
-env.load()
-init_vm()
+data = Data()
+if env.data_file:
+    data.load_data(env)
+    init_vm()
 
 if __name__ == '__main__':
-
     main()
+    #import cProfile
+    #cProfile.run('main()', sort='time')

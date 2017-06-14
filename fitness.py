@@ -16,18 +16,18 @@ def accuracy(prog, y, y_pred, store_fitness=None):
     return acc
 
 
-@profile
+#@profile
 def avg_detect_rate(prog, y, y_pred, store_fitness=None):
     fitness = vm.avg_detect_rate(prog, y, array('i', y_pred))
     return fitness
 
 
-@profile
+#@profile
 def fitness_sharing(pop, X, y):
-    fitness = vm.fitness_sharing(np.asarray(pop), X, y)
+    fitness = vm.fitness_sharing(pop, X, y)
     return fitness
 
-@profile
+#@profile
 def predicted_classes(prog, X, fitness_sharing=0):
     y_pred = []
     for i in range(len(X)):

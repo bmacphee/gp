@@ -1,10 +1,10 @@
-import const, random, sys, time, shelve, matplotlib, pdb
+import const, random, sys, time, utils, matplotlib, os, pdb
 import numpy as np
 import cythondir.vm as vm
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import fitness as fit
-import data_utils as util
+import data_utils as dutil
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
 from importlib import reload
 from array import array
@@ -18,12 +18,12 @@ class Config:
     def __init__(self):
         self.ops = [0, 1, 2, 3]
         self.pop_size = 100
-        self.generations = 100
-        self.graph_step = 1
-        self.graph_save_step = None
+        self.generations = 1000000
+        self.graph_step = 10
+        self.graph_save_step = 10
         self.data_files = ['data/iris.data', 'data/tic-tac-toe.data', 'data/ann-train.data', 'data/shuttle.trn',
                            'data/MNIST/train-images.idx3-ubyte']
-        self.data_file = self.data_files[1]
+        self.data_file = self.data_files[2]
 
         self.standardize_method = const.StandardizeMethod.MEAN_VARIANCE
         self.selection = const.Selection.BREEDER_MODEL
@@ -38,7 +38,7 @@ class Config:
         self.num_ipregs = None
         self.train_fitness_eval = fit.fitness_sharing
         self.test_fitness_eval = fit.avg_detect_rate
-        self.subset_sampling = util.even_data_subset
+        self.subset_sampling = dutil.even_data_subset
 
 
 class Data:
@@ -54,24 +54,24 @@ class Data:
         if config.data_file is None:
             return
 
-        data = util.load_data(config.data_file)
+        data = dutil.load_data(config.data_file)
         y = [ex[-1:len(ex)][0] for ex in data]
-        self.classes = util.get_classes(y)
+        self.classes = dutil.get_classes(y)
         y = np.array([self.classes[label] for label in y], dtype=np.int32)
-        X = util.preprocess([ex[:len(ex) - 1] for ex in data])
+        X = dutil.preprocess([ex[:len(ex) - 1] for ex in data])
 
         try:
-            test_data = util.load_data(const.TEST_DATA_FILES[config.data_file])
+            test_data = dutil.load_data(const.TEST_DATA_FILES[config.data_file])
             X_train = X
-            X_test = util.preprocess([ex[:len(ex) - 1] for ex in test_data])
+            X_test = dutil.preprocess([ex[:len(ex) - 1] for ex in test_data])
             self.y_train = y
             self.y_test = np.array([self.classes[label] for label in [ex[-1:len(ex)][0] for ex in test_data]],
                                    dtype=np.int32)
         except KeyError:
-            X_train, X_test, self.y_train, self.y_test = util.split_data(X, y, config.test_size)
+            X_train, X_test, self.y_train, self.y_test = dutil.split_data(X, y, config.test_size)
 
         if config.standardize_method is not None:
-            X_train, X_test = util.standardize(X_train, X_test, env.standardize_method)
+            X_train, X_test = dutil.standardize(X_train, X_test, env.standardize_method)
             self.X_train, self.X_test = np.array(X_train, dtype=np.float64), np.array(X_test, dtype=np.float64)
         config.num_ipregs = len(self.X_train[0])
         config.output_dims = len(self.classes)
@@ -80,17 +80,6 @@ class Data:
     def set_classes(self, X, y):
         for cl in self.classes.values():
             self.data_by_classes[cl] = [X[i] for i in range(len(X)) if y[i] == cl]
-
-
-# class Prog:
-#     def __init__(self, prog):
-#         self.prog = prog
-#         self.effective_instrs = None
-#         # Fitness for training eval on train, testing eval on train, testing eval on test
-#         self.trainset_trainfit = None
-#         self.trainset_testfit = None
-#         self.testset_testfit = None
-#         self.train_y_pred = None
 
 
 '''
@@ -136,16 +125,10 @@ Results
 
 #@profile
 def get_fitness_results(pop, X, y, fitness_eval, store_fitness=None):
-    # results = [fitness_eval(prog, y, predicted_classes(prog, X, v)) if (prog.fitness is None or not training) else prog.fitness for prog in pop]
     if fitness_eval.__name__ == 'fitness_sharing':
-        results = fit.fitness_sharing(pop, X, y)
+        results = fit.fitness_sharing(np.asarray(pop), X, y)
     else:
-        # all_y_pred = vm.y_pred(np.array(pop), np.array(X), 0).tolist()
         all_y_pred = vm.y_pred(np.asarray(pop), X)
-        # results = [fitness_eval(prog, y, predicted_classes(prog, X), store_fitness=store_fitness)
-        #            if ((store_fitness is None) or getattr(prog, store_fitness) == -1)
-        #            else getattr(prog, store_fitness) for prog in pop]
-
         results = [fitness_eval(pop[i], y, all_y_pred[i]) for i in range(len(pop))]
     return results
 
@@ -158,7 +141,6 @@ Variation operators
 #@profile
 # Recombination - swap sections of 2 programs
 def recombination(progs):
-    # progs = copy.deepcopy(progs)
     progs = [progs[0].copy(), progs[1].copy()]
     assert len(progs) == 2
     prog0, prog1 = progs[0].prog, progs[1].prog
@@ -168,11 +150,8 @@ def recombination(progs):
     end_index = random.randint(start_index + 1, end_limit)
 
     for col in range(len(prog0)):
-        prog1[col][start_index:end_index], prog0[col][start_index:end_index] = prog0[col][start_index:end_index], prog1[
-                                                                                                                      col][
-                                                                                                                  start_index:end_index]
-    # for prog in progs:
-    #     check_fitness_after_variation(prog, list(range(start_index, end_index)))
+        prog1[col][start_index:end_index] = prog0[col][start_index:end_index]
+        prog0[col][start_index:end_index] = prog1[col][start_index:end_index]
     return [progs[0], progs[1]]
 
 
@@ -217,7 +196,6 @@ def mutation(progs, effective_mutations=False):
                 #         op = random.randint(0, 1)
                 # new_val = (orig_val+step_size) if op is 0 else (orig_val-step_size)
                 # Use all vals or use 1-step vals?
-                # pdb.set_trace()
                 options = [x for x in range(env.max_vals[col]) if x != orig_val]
             new_val = np.random.choice(options)
             prog.prog[col][index] = new_val
@@ -258,12 +236,6 @@ def tournament(X, y, pop, fitness_eval, var_op_probs=[0.5, 0.5]):
         progs = recombination(parents)
 
     pop += progs
-    # if fitness_eval.__name__ == 'fitness_sharing':
-    #     for prog in pop[-2:]:
-    #         if getattr(prog, 'train_y_pred')[0] == -1:
-    #             clear_attrs(pop)
-    #             break
-
     return pop
 
 
@@ -276,7 +248,6 @@ def breeder(X, y, pop, fitness_eval, gap=0.2, var_op_probs=[0.5, 0.5]):
     partition = len(pop) - int(len(pop) * gap)
     top_i = ranked_index[-partition:]
     new_pop = [pop[i] for i in top_i]
-    cleared_attrs = 0
 
     while len(new_pop) < env.pop_size:
         if len(new_pop) == (env.pop_size - 1):
@@ -292,36 +263,18 @@ def breeder(X, y, pop, fitness_eval, gap=0.2, var_op_probs=[0.5, 0.5]):
             progs = recombination([pop[i] for i in parents_i])
         new_pop += progs
 
-        # if not cleared_attrs and fitness_eval.__name__ == 'fitness_sharing':
-        #     for prog in progs:
-        #         if getattr(prog, 'train_y_pred')[0] == -1:
-        #             cleared_attrs = 1
-        #             clear_attrs(new_pop)
-        #             break
-
     return new_pop
-
-
-#@profile
-def check_fitness_after_variation(prog, instrs_changed):
-    orig_eff_instrs = prog.effective_instrs
-    effective_instrs = fit.find_introns(prog)
-
-    if np.array_equal(effective_instrs, orig_eff_instrs) and set(instrs_changed).isdisjoint(orig_eff_instrs):
-        pass
-    else:
-        clear_attrs([prog], clear_y_pred=True)
 
 
 #@profile
 def run_model(X, y, pop, selection, generations, X_test=None, y_test=None):
     start = time.time()
-    filename_prefix = filenum()
+    filename_prefix = utils.filenum()
     validation = (env.use_validation and env.use_subset)
-    max_fitness_gen, max_fitness = 0, 0
+    max_fitness_gen, max_fitness, graph_iter = 0, 0, 0
     # Components to graph
     to_graph = {
-        'top_trainfit_in_trainset': 1,  # Top training fitness value in training set
+        'top_trainfit_in_trainset': 0,  # Top training fitness value in training set
         'train_means': None,  # Mean of training fitness values in training set
         'test_means': 1,  # Mean of testing fitness values in training set
         'top_train_prog_on_test': 1,  # Testing fitness on test set of top training fitness prog in training set
@@ -361,6 +314,7 @@ def run_model(X, y, pop, selection, generations, X_test=None, y_test=None):
 
         # Run train/test fitness evaluations for data to be graphed
         if (i % env.graph_step == 0) or (i == (env.generations - 1)):
+            graph_iter += 1
             if to_graph['top_trainfit_in_trainset'] or (env.train_fitness_eval == env.test_fitness_eval):
                 trainset_results_with_trainfit = get_fitness_results(pop, X, y, fitness_eval=env.train_fitness_eval)
                 top_trainfit_in_trainset.append(max(trainset_results_with_trainfit))
@@ -400,12 +354,12 @@ def run_model(X, y, pop, selection, generations, X_test=None, y_test=None):
             graph_inc = [to_graph['top_trainfit_in_trainset'], to_graph['train_means'], to_graph['test_means'],
                          to_graph['top_train_prog_on_test'], to_graph['top_test_fit_on_train']]
             graphparam = list(map(lambda x: graphparam[x] if graph_inc[x] else None, range(len(graphparam))))
-            graph(filename_prefix, env.graph_step, env.generations - 1, graphparam[0], graphparam[1], graphparam[2],
+            graph(filename_prefix, env.graph_step, graph_iter, graphparam[0], graphparam[1], graphparam[2],
                   graphparam[3],
                   graphparam[4])
 
             if to_graph['percentages']:
-                graph_percs(filename_prefix, env.graph_step, env.generations - 1, percentages)
+                graph_percs(filename_prefix, env.graph_step, graph_iter, percentages)
     plt.close('all')
 
     # print_stats(pop, trainset_results_with_testfit, testset_results_with_testfit, top_prog_testfit_on_testset)
@@ -438,9 +392,7 @@ def print_stats(pop, train_results_with_test_fit, test_results_with_test_fit, te
 
 def graph(n, graph_step, last_x, top_train_fit_on_train=None, train_means=None, test_means=None,
           top_train_prog_on_test=None, top_test_fit_on_train=None):
-    gens = [i for i in range(env.generations) if (i % graph_step == 0)]
-    if gens[-1] != last_x:
-        gens.append(last_x)
+    gens = [i*graph_step for i in range(last_x)]
 
     fig = plt.figure(figsize=(13, 13), dpi=80)
     ax = fig.add_subplot(111)
@@ -483,15 +435,12 @@ def graph(n, graph_step, last_x, top_train_fit_on_train=None, train_means=None, 
     plt.tick_params(which='both', width=1)
 
     if TESTING == 0:
-        filename = '{}{}_fitness.png'.format(const.IMAGE_DIR, n)
-        fig.savefig(filename)
-        print('Saved file: {}'.format(filename))
+        filename = '{}_fitness.png'.format(n)
+        save_figure(filename, fig)
 
 
 def graph_percs(n, graph_step, last_x, percentages):
-    generations = [i for i in range(env.generations) if (i % graph_step == 0)]
-    if generations[-1] != last_x:
-        generations.append(last_x)
+    generations = [i*graph_step for i in range(last_x)]
 
     fig = plt.figure(figsize=(13, 13), dpi=80)
     ax = fig.add_subplot(111)
@@ -510,19 +459,18 @@ def graph_percs(n, graph_step, last_x, percentages):
     plt.tick_params(which='both', width=1)
 
     if TESTING == 0:
-        filename = '{}{}_classes.png'.format(const.IMAGE_DIR, n)
-        fig.savefig(filename)
-        print('Saved file: {}'.format(filename))
+        filename = '{}_classes.png'.format(n)
+        save_figure(filename, fig)
 
 
-def filenum():
-    with shelve.open('config') as c:
-        try:
-            c['num'] += 1
-        except KeyError:
-            c['num'] = 0
-        n = c['num']
-    return n
+def save_figure(filename, fig, print_alert=False):
+    date = time.strftime("%d_%m_%Y")
+    filepath = os.path.join(const.IMAGE_DIR, date, filename)
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    fig.savefig(filepath)
+    if print_alert:
+        print('Saved file: {}'.format(filepath))
+    plt.close('all')
 
 
 #@profile

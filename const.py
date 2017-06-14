@@ -7,7 +7,7 @@ MODE = 3
 PROG_LENGTH = 48
 TOURNAMENT_SIZE = 4
 GEN_REGS = 8
-IMAGE_DIR = '/home/selene/Documents/results/'
+IMAGE_DIR = '/home/selene/Documents/results'
 TEST_DATA_FILES = {
     'data/ann-train.data': 'data/ann-test.data',
     'data/shuttle.trn': 'data/shuttle.tst',

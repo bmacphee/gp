@@ -18,19 +18,18 @@ class Config:
     def __init__(self):
         self.ops = [0, 1, 2, 3]
         self.pop_size = 100
-        self.generations = 1000000
-        self.graph_step = 10
-        self.graph_save_step = 10
+        self.generations = 5000
+        self.graph_step = 20
+        self.graph_save_step = 1000
         self.data_files = ['data/iris.data', 'data/tic-tac-toe.data', 'data/ann-train.data', 'data/shuttle.trn',
                            'data/MNIST/train-images.idx3-ubyte']
-        self.data_file = self.data_files[2]
-
+        self.data_file = self.data_files[0]
         self.standardize_method = const.StandardizeMethod.MEAN_VARIANCE
         self.selection = const.Selection.BREEDER_MODEL
         self.alpha = 1
         self.use_subset = 1
         self.subset_size = 200
-        self.use_validation = 1
+        self.use_validation = self.use_subset
         self.validation_size = 200
         self.test_size = 0.2
         self.train_fitness_eval = None
@@ -72,7 +71,7 @@ class Data:
 
         if config.standardize_method is not None:
             X_train, X_test = dutil.standardize(X_train, X_test, env.standardize_method)
-            self.X_train, self.X_test = np.array(X_train, dtype=np.float64), np.array(X_test, dtype=np.float64)
+        self.X_train, self.X_test = np.array(X_train, dtype=np.float64), np.array(X_test, dtype=np.float64)
         config.num_ipregs = len(self.X_train[0])
         config.output_dims = len(self.classes)
         config.max_vals = [const.GEN_REGS, max(const.GEN_REGS, config.num_ipregs), max(config.ops), 2]
@@ -162,7 +161,7 @@ def mutation(progs, effective_mutations=False):
     min_lines, max_lines = 1, len(progs[0].prog[0])
 
     # One prog input for mutation
-    progs = [progs[0].copy()]
+    progs = [prog.copy() for prog in progs]
     children = []
     for prog in progs:
         # Test - effective mutations
@@ -199,7 +198,6 @@ def mutation(progs, effective_mutations=False):
                 options = [x for x in range(env.max_vals[col]) if x != orig_val]
             new_val = np.random.choice(options)
             prog.prog[col][index] = new_val
-        # check_fitness_after_variation(prog, lines)
         children.append(prog)
     return children
 
@@ -347,7 +345,8 @@ def run_model(X, y, pop, selection, generations, X_test=None, y_test=None):
                 for p in cp:
                     percentages[p].append(cp[p])
 
-        if ((env.graph_save_step is not None) and (i % env.graph_save_step == 0)) or (i == env.generations - 1):
+        if not TESTING and (((env.graph_save_step is not None) and (i % env.graph_save_step == 0))
+                            or (i == env.generations - 1)):
             # Get graph parameters for graphing function - set to None to not display a graph component
             graphparam = [top_trainfit_in_trainset, trainfit_trainset_means, testfit_trainset_means,
                           top_prog_testfit_on_testset, top_testfit_in_trainset]
@@ -562,8 +561,9 @@ def main():
     #all_y_pred = [fit.predicted_classes(prog, data.X_train) for prog in pop]
     # for prog in pop:
     #     prog.prog = np.array(prog.prog)
-    # all_y_pred=vm.y_pred(np.asarray(pop), data.X_train)
+    #all_y_pred=vm.y_pred(np.asarray(pop), data.X_train)
     # vm.fitness_sharing(np.asarray(pop), data.X_train, pred)
+    #fit.avg_detect_rate(pop[0], data.y_train, pred)
 
 
 def init_vm():

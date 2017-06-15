@@ -31,13 +31,13 @@ def fitness_sharing(pop, X, y):
 def predicted_classes(prog, X, fitness_sharing=0):
     y_pred = []
     for i in range(len(X)):
-        y_pred.append(vm.run_prog(prog, X[i]))
+        y_pred.append(prog.run_prog(X[i]))
     return y_pred
 
 
 def class_percentages(prog, X, y, classes):
     percentages = {}
-    y_pred = predicted_classes(prog, X)
+    y_pred = vm.y_pred(np.asarray([prog]), X)[0]
 
     for cl in classes:
         cl_results = [i for i in range(len(y)) if y[i] == classes[cl]]

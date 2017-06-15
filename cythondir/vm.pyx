@@ -1,4 +1,6 @@
-#cython: language_level=3, boundscheck=False, wraparound=False, cdivison=True
+#!python
+#cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
+
 import const
 import numpy as np
 cimport numpy as np
@@ -12,6 +14,13 @@ DTYPE_I = np.int
 DTYPE_D = np.float64
 ctypedef np.int_t DTYPE_I_t
 ctypedef np.float64_t DTYPE_D_t
+
+cpdef double default_val = 1.0
+cpdef int num_genregs = 8
+cpdef int num_ipregs
+cpdef int output_dims
+cpdef int prog_len = const.PROG_LENGTH
+cpdef int target_i = const.TARGET, source_i = const.SOURCE, mode_i = const.MODE, op_i = const.OP
 
 cdef extern from "math.h":
     float sqrt(float) nogil
@@ -31,49 +40,63 @@ cdef extern from "math.h":
 cdef extern from "string.h":
     int strcmp(const char * lhs, const char * rhs )
 
-cpdef double default_val = 1.0
-cpdef int num_genregs = 8
-cpdef int num_ipregs
-cpdef int output_dims
-cpdef int prog_len = const.PROG_LENGTH
-cpdef int target_i = const.TARGET, source_i = const.SOURCE, mode_i = const.MODE, op_i = const.OP
-
 
 def get_vals():
     return num_genregs, num_ipregs, output_dims
 
+
+cdef class Point:
+    cdef:
+        DTYPE_D_t[:] values
+        DTYPE_D fitness
+    def __cinit__(self, np.ndarray values):
+        self.values = values
+
+    def fitness(self):
+        pass
+
 cdef class Prog:
-    def __init__(self, prog):
+    cdef public DTYPE_I_t[:,:] prog
+    cdef public int[:] effective_instrs
+    cdef DTYPE_I_t[:] train_y_pred
+
+    def __cinit__(self, prog not None):
         self.prog = np.asarray(prog, dtype=DTYPE_I)
         self.effective_instrs = array.array('i', [-1])
         # Fitness for training eval on train, testing eval on train, testing eval on test
-        self.trainset_trainfit = -1
-        self.trainset_testfit = -1
-        self.testset_testfit = -1
-        self.train_y_pred = array.array('i', [-1])
 
-    def copy(self):
+    cpdef copy(self):
         new_prog = [col[:] for col in self.prog]
         pr = Prog(new_prog)
-        pr.trainset_trainfit = self.trainset_trainfit
-        pr.trainset_testfit = self.trainset_testfit
-        pr.testset_testfit = self.testset_testfit
-        pr.effective_instrs = self.effective_instrs[:] if self.effective_instrs else None
-        pr.train_y_pred = self.train_y_pred[:] if self.train_y_pred else None
+        pr.effective_instrs = array.array('i', [-1])
         return pr
 
+    cpdef DTYPE_I_t run_prog(self, DTYPE_D_t[:] ip) except -1:
+        global num_genregs, num_ipregs, prog_len, target_i, source_i, mode_i, op_i
+        cdef:
+            DTYPE_I_t[:,:] pr = self.prog
+            DTYPE_I_t[:] target_col = pr[target_i]
+            DTYPE_I_t[:] source_col = pr[source_i]
+            DTYPE_I_t[:] mode_col = pr[mode_i]
+            DTYPE_I_t[:] op_col = pr[op_i]
+            int max_ind = 0
 
-cdef class Vm:
-    cdef public int num_genregs, num_ipregs, output_dims, prog_len
-    cdef public np.ndarray X
-    cdef double default_val
+        if self.effective_instrs[0] == -1:
+            self.effective_instrs = findintrons(target_col, source_col, mode_col)
 
-    def __init__(self, num_genregs, num_ipregs, output_dims, prog_len):
-        self.num_genregs = num_genregs
-        self.num_ipregs = num_ipregs
-        self.output_dims = output_dims
-        self.prog_len = prog_len
-        self.default_val = 1.0
+        cdef:
+            DTYPE_I_t i, ip_len = len(ip), s = len(self.effective_instrs)
+            double* output
+            int[:] effective_instrs = self.effective_instrs
+
+        with nogil:
+            output = register_vals(s, effective_instrs, target_col, source_col, mode_col, op_col, ip)
+        for i in range(1, output_dims):
+            if output[i] > output[max_ind]:
+                max_ind = i
+
+        free(output)
+        return max_ind
 
 
 cpdef DTYPE_I_t[:,::1] y_pred(Prog[:] progs, DTYPE_D_t[:,:] X):
@@ -83,14 +106,15 @@ cpdef DTYPE_I_t[:,::1] y_pred(Prog[:] progs, DTYPE_D_t[:,:] X):
         DTYPE_I_t[:] y_pred = np.empty(num_ex, dtype=DTYPE_I)
         Py_ssize_t i, j
         Prog prog
-        DTYPE_D_t[:] curr_ex
+        DTYPE_D_t[:] curr_ex, curr_y_pred
 
     for i in range(num_progs):
         prog = progs[i]
         for j in range(num_ex):
             curr_ex = X[j]
-            y_pred[j] = run_prog(prog, curr_ex)
+            curr_y_pred = prog.run_prog(curr_ex)
         all_y_pred[i] = y_pred
+        prog.train_y_pred = y_pred
     return all_y_pred
 
 
@@ -158,39 +182,7 @@ cpdef void init(int genregs, int ipregs, int outdims):
     output_dims = outdims
 
 
-cpdef DTYPE_I_t run_prog(Prog prog, DTYPE_D_t[:] ip) except -1:
-    global num_genregs, num_ipregs, prog_len, target_i, source_i, mode_i, op_i
-    #
-
-    cdef:
-        DTYPE_I_t[:,:] pr = prog.prog
-        DTYPE_I_t[:] target_col = pr[target_i]
-        DTYPE_I_t[:] source_col = pr[source_i]
-        DTYPE_I_t[:] mode_col = pr[mode_i]
-        DTYPE_I_t[:] op_col = pr[op_i]
-        int max_ind = 0
-
-    if prog.effective_instrs is None:
-        setattr(prog, 'effective_instrs', findintrons(target_col, source_col, mode_col))
-
-    cdef:
-        DTYPE_I_t i, ip_len = len(ip), s = len(prog.effective_instrs)
-        double* output
-        int[:] effective_instrs = prog.effective_instrs
-
-
-    with nogil:
-        output = runprog(s, effective_instrs, target_col, source_col, mode_col, op_col, ip)
-
-    for i in range(1, output_dims):
-        if output[i] > output[max_ind]:
-            max_ind = i
-
-    free(output)
-    return max_ind
-
-
-cdef double* runprog(DTYPE_I_t length, int[:] effective_instrs, DTYPE_I_t[:] target_col, DTYPE_I_t[:] source_col, DTYPE_I_t[:] mode_col, DTYPE_I_t[:] op_col, DTYPE_D_t[:] ip) nogil:
+cdef double* register_vals(DTYPE_I_t length, int[:] effective_instrs, DTYPE_I_t[:] target_col, DTYPE_I_t[:] source_col, DTYPE_I_t[:] mode_col, DTYPE_I_t[:] op_col, DTYPE_D_t[:] ip) nogil:
     global num_genregs, default_val
     cdef char* n = '\n'
     cdef:

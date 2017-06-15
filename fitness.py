@@ -31,7 +31,8 @@ def fitness_sharing(pop, X, y):
 def predicted_classes(prog, X, fitness_sharing=0):
     y_pred = []
     for i in range(len(X)):
-        y_pred.append(prog.run_prog(X[i]))
+        prog.run_prog(X[i])
+        y_pred.append(prog.max_ind())
     return y_pred
 
 
@@ -45,8 +46,3 @@ def class_percentages(prog, X, y, classes):
         percentages[cl] = perc
     return percentages
 
-
-def find_introns(prog):
-    instrs = vm.find_introns(prog.prog[const.TARGET], prog.prog[const.SOURCE], prog.prog[const.MODE])
-    prog.effective_instrs = instrs
-    return instrs

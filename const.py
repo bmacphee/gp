@@ -14,9 +14,11 @@ TEST_DATA_FILES = {
     'data/MNIST/train-images.idx3-ubyte': 'data/MNIST/t10k-images.idx3-ubyte'
 }
 
-LABEL_DATA_FILES = {
-    'data/MNIST/train-images.idx3-ubyte': 'data/MNIST/train-labels.idx1-ubyte',
-    'data/MNIST/t10k-images.idx3-ubyte': 'data/MNIST/t10k-labels.idx1-ubyte'
+MNIST_DATA_FILES = {
+    'X_train': 'data/mnist_xtrain_standardized.gz',
+    'X_test': 'data/mnist_xtest_standardized.gz',
+    'y_train': 'data/mnist_ytrain.gz',
+    'y_test': 'data/mnist_ytest.gz'
 }
 
 OPS = {
@@ -26,7 +28,8 @@ OPS = {
     3: '/',
     4: 'sin',
     5: 'e',
-    6: 'ln'
+    6: 'ln',
+    7: 'conditional'
 }
 # Not used yet
 #VAR_OPS = [gp.recombination, gp.mutation]
@@ -41,5 +44,5 @@ class StandardizeMethod(Enum):
     LINEAR_TRANSFORM = 1
 
 class Selection(Enum):
-    STEADY_STATE_TOURN = 'Steady State Tournmanet'
+    STEADY_STATE_TOURN = 'Steady State Tournament'
     BREEDER_MODEL = 'Breeder Model'

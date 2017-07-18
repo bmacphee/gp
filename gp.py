@@ -1,6 +1,8 @@
 import const, random, sys, time, utils, matplotlib, os, pdb
 import numpy as np
 import cythondir.vm as vm
+import var_ops as ops
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import fitness as fit
@@ -9,76 +11,108 @@ from matplotlib.ticker import MultipleLocator, AutoMinorLocator
 from importlib import reload
 from array import array
 
-
 TESTING = 0
 data, env = None, None
 
 
 class Config:
     def __init__(self):
-        self.ops = [0, 1, 2, 3]
-        self.pop_size = 10
-        self.generations = 5000
-        self.graph_step = 20
-        self.graph_save_step = 1000
+        self.ops = [0, 1, 2, 3, 4, 5, 6, 7]  # Ops: [+, -, *, /, sin, e, ln, conditional]
+        self.pop_size = 100
+        self.generations = 40000
+        self.graph_step = 50
+        self.graph_save_step = 100
         self.data_files = ['data/iris.data', 'data/tic-tac-toe.data', 'data/ann-train.data', 'data/shuttle.trn',
-                           'data/MNIST/train-images.idx3-ubyte']
-        self.data_file = self.data_files[1]
+                           'data/MNIST']
+        self.data_file = self.data_files[3]
         self.standardize_method = const.StandardizeMethod.MEAN_VARIANCE
         self.selection = const.Selection.BREEDER_MODEL
+        self.breeder_gap = 0.2
         self.alpha = 1
         self.use_subset = 1
         self.subset_size = 200
-        self.use_validation = self.use_subset
+        self.use_validation = 1
         self.validation_size = 200
         self.test_size = 0.2
-        self.train_fitness_eval = None
-        self.test_fitness_eval = None
         self.num_ipregs = None
+        self.output_dims = None
         self.train_fitness_eval = fit.fitness_sharing
         self.test_fitness_eval = fit.avg_detect_rate
         self.subset_sampling = dutil.even_data_subset
+        self.max_vals = []
+
+        self.bid_gp = 1
+        self.point_fitness = 1
+        self.host_size = self.pop_size
+        self.point_gap = 0.2
+        self.host_gap = 0.5
+        self.prob_removal = 0.7
+        self.prob_add = 0.7
+        self.prob_modify = 0.2
+        self.prob_change_label = 0.1
+        self.prob_mutate = 1
+        self.prob_swap = 1
+        self.max_teamsize = 10
+        self.min_teamsize = 2
+        self.start_teamsize = 2
 
 
 class Data:
     def __init__(self):
-        self.classes = None
-        self.data_by_classes = {}
+        self.classes = None  # Available classes
+        self.data_by_classes = {}  # Data organized by classes
         self.X_train = None
         self.X_test = None
         self.y_train = None
         self.y_test = None
+        self.last_X_train = None
+        self.curr_X = None
+        self.curr_y = None
+        self.curr_i = None
 
     def load_data(self, config):
         if config.data_file is None:
-            return
+            raise AttributeError('No data file to load')
 
-        data = dutil.load_data(config.data_file)
-        y = [ex[-1:len(ex)][0] for ex in data]
-        self.classes = dutil.get_classes(y)
-        y = np.array([self.classes[label] for label in y], dtype=np.int32)
-        X = dutil.preprocess([ex[:len(ex) - 1] for ex in data])
+        if config.data_file == 'data/MNIST':
+            self.X_train, self.y_train, self.X_test, self.y_test = dutil.load_mnist()  # Requires gzip method
+            self.classes = dutil.get_classes(self.y_train)
 
-        try:
-            test_data = dutil.load_data(const.TEST_DATA_FILES[config.data_file])
-            X_train = X
-            X_test = dutil.preprocess([ex[:len(ex) - 1] for ex in test_data])
-            self.y_train = y
-            self.y_test = np.array([self.classes[label] for label in [ex[-1:len(ex)][0] for ex in test_data]],
-                                   dtype=np.int32)
-        except KeyError:
-            X_train, X_test, self.y_train, self.y_test = dutil.split_data(X, y, config.test_size)
+        else:
+            data = dutil.load_data(config.data_file)
+            y = [ex[-1:len(ex)][0] for ex in data]
+            self.classes = dutil.get_classes(y)
+            y = np.array([self.classes[label] for label in y], dtype=np.int32)
+            X = dutil.preprocess([ex[:len(ex) - 1] for ex in data])
 
-        if config.standardize_method is not None:
-            X_train, X_test = dutil.standardize(X_train, X_test, env.standardize_method)
-        self.X_train, self.X_test = np.array(X_train, dtype=np.float64), np.array(X_test, dtype=np.float64)
+            # Data with corresponding test file - load train/test
+            try:
+                test_data = dutil.load_data(const.TEST_DATA_FILES[config.data_file])
+                X_train = X
+                X_test = dutil.preprocess([ex[:len(ex) - 1] for ex in test_data])
+                self.y_train = y
+                self.y_test = np.array([self.classes[label] for label in [ex[-1:len(ex)][0] for ex in test_data]],
+                                       dtype=np.int32)
+            # Data with no corresponding test file - split into train/test
+            except KeyError:
+                X_train, X_test, self.y_train, self.y_test = dutil.split_data(X, y, config.test_size)
+
+            if config.standardize_method is not None:
+                X_train, X_test = dutil.standardize(X_train, X_test, env.standardize_method)
+            self.X_train, self.X_test = np.array(X_train, dtype=np.float64), np.array(X_test, dtype=np.float64)
+
         config.num_ipregs = len(self.X_train[0])
-        config.output_dims = len(self.classes)
-        config.max_vals = [const.GEN_REGS, max(const.GEN_REGS, config.num_ipregs), max(config.ops), 2]
+        config.max_vals = [const.GEN_REGS, max(const.GEN_REGS, config.num_ipregs), None, 2]
+
+        if config.bid_gp:
+            config.output_dims = 1  # One bid register
+        else:
+            config.output_dims = len(self.classes)  # Register for each class
 
     def set_classes(self, X, y):
         for cl in self.classes.values():
-            self.data_by_classes[cl] = [X[i] for i in range(len(X)) if y[i] == cl]
+            # self.data_by_classes[cl] = [X[i] for i in range(len(X)) if y[i] == cl]
+            self.data_by_classes[cl] = [i for i in range(len(X)) if y[i] == cl]
 
 
 '''
@@ -111,11 +145,50 @@ def gen_prog(pr):
 
 
 def gen_population(pop_num):
-    pop = [gen_prog(const.PROG_LENGTH) for n in range(0, pop_num)]
+    pop = [gen_prog(const.PROG_LENGTH) for _ in range(0, pop_num)]
     for p in pop:
-        #p.effective_instrs = fit.find_introns(p)
+        # p.effective_instrs = fit.find_introns(p)
         vm.set_introns(p)
     return pop
+
+
+def gen_hosts(pop, data):
+    if not data.classes:
+        raise AttributeError('Data not loaded')
+
+    classes = list(data.classes.values())
+    num_hosts = int(env.host_size * env.host_gap)
+    hosts = [vm.Host() for _ in range(num_hosts)]
+
+    for i, host in enumerate(hosts):
+        pop_index = i * 2
+        progs = array('i', [pop_index, pop_index + 1])
+        # host.progs_i = progs
+        host.set_progs(progs)
+        options = classes[:]
+        for prog_i in progs:
+            prog = pop[prog_i]
+            prog.class_label = np.random.choice(options)
+            options.remove(prog.class_label)
+
+    min_size = env.min_teamsize - env.start_teamsize
+    max_size = env.max_teamsize - env.start_teamsize
+    for host in hosts:
+        size = random.randint(min_size, max_size)
+        if size > 0:
+            options = [x for x in list(range(len(pop))) if x not in host.progs_i]
+            host.add_progs(array('i', np.random.choice(options, size, replace=False)))
+
+    # hosts += make_hosts(pop, hosts, int(env.host_size - int(env.host_size*env.host_gap)))
+    init_hosts(np.array(hosts), data, pop)
+    hosts += [None] * (env.host_size - num_hosts)
+
+    return np.array(hosts)
+
+def init_hosts(hosts, data, pop):
+    X, y, x_ind = dutil.even_data_subset(data, env.subset_size)
+    vm.host_y_pred(np.asarray(pop), hosts, X, np.asarray(x_ind))
+    data.last_X_train = x_ind
 
 
 '''
@@ -123,83 +196,17 @@ Results
 '''
 
 
-#@profile
-def get_fitness_results(pop, X, y, fitness_eval, store_fitness=None):
+# #@profile
+def get_fitness_results(pop, X, y, fitness_eval, hosts=None, curr_i=None):
     if fitness_eval.__name__ == 'fitness_sharing':
-        results = fit.fitness_sharing(np.asarray(pop), X, y)
+        results = fit.fitness_sharing(np.asarray(pop), X, y, hosts, curr_i)
     else:
-        all_y_pred = vm.y_pred(np.asarray(pop), X)
-        results = [fitness_eval(pop[i], y, all_y_pred[i]) for i in range(len(pop))]
-    return results
-
-
-'''
-Variation operators
-'''
-
-
-#@profile
-# Recombination - swap sections of 2 programs
-def recombination(progs):
-    progs = [progs[0].copy(), progs[1].copy()]
-    assert len(progs) == 2
-    prog0, prog1 = progs[0].prog, progs[1].prog
-    prog_len = len(prog0[0])
-    start_index = random.randint(0, prog_len - 2)
-    end_limit = prog_len - 1 if start_index is 0 else prog_len  # avoid swapping whole program
-    end_index = random.randint(start_index + 1, end_limit)
-
-    for col in range(len(prog0)):
-        prog1[col][start_index:end_index] = prog0[col][start_index:end_index]
-        prog0[col][start_index:end_index] = prog1[col][start_index:end_index]
-    return [progs[0], progs[1]]
-
-
-#@profile
-# Mutation - change 1 value in the program
-def mutation(progs, effective_mutations=False):
-    min_lines, max_lines = 1, len(progs[0].prog[0])
-
-    # One prog input for mutation
-    progs = [prog.copy() for prog in progs]
-    children = []
-    for prog in progs:
-        # Test - effective mutations
-        if effective_mutations:
-            if prog.effective_instrs[0] == -1:
-                fit.find_introns(prog)
-            num_lines = random.randint(min_lines, min(max_lines, len(prog.effective_instrs)))
-            lines = np.random.choice(prog.effective_instrs, size=num_lines, replace=False)
+        if hosts is not None:
+            all_y_pred = vm.host_y_pred(np.asarray(pop), np.asarray(hosts), X, x_inds=None)
         else:
-            num_lines = random.randint(min_lines, max_lines)
-            lines = np.random.choice(list(range(max_lines)), size=num_lines, replace=False)
-        for index in lines:
-            col = random.randint(0, len(prog.prog) - 1)
-            orig_val = prog.prog[col][index]
-            # new_val = orig_val
-            if col == const.OP:
-                options = [x for x in env.ops if x != orig_val]
-                # new_val = np.random.choice(options)
-            #
-            # elif (col == const.TARGET) and effective_mutations:
-            #     options = set([prog.prog[const.TARGET][i] for i in prog.effective_instrs]).difference(set([orig_val]))
-            #     new_val = np.random.choice(options)
-
-            else:
-                # while new_val == orig_val:
-                #     if new_val == 0:
-                #         op = 0
-                #     elif (new_val == env.max_vals[col]):
-                #         op = 1
-                #     else:
-                #         op = random.randint(0, 1)
-                # new_val = (orig_val+step_size) if op is 0 else (orig_val-step_size)
-                # Use all vals or use 1-step vals?
-                options = [x for x in range(env.max_vals[col]) if x != orig_val]
-            new_val = np.random.choice(options)
-            prog.prog[col][index] = new_val
-        children.append(prog)
-    return children
+            all_y_pred = vm.y_pred(np.asarray(pop), X)
+        results = [fitness_eval(pop[i], data.curr_y, all_y_pred[i]) for i in range(len(all_y_pred))]
+    return results
 
 
 '''
@@ -207,67 +214,216 @@ Selection
 '''
 
 
-#@profile
+# #@profile
 # Steady state tournament for selection
-def tournament(X, y, pop, fitness_eval, var_op_probs=[0.5, 0.5]):
+def tournament(data, env, pop, fitness_eval, var_op_probs=[0.5, 0.5]):
+    X, y = data.curr_X, data.curr_y
     indivs = set()
     while len(indivs) < const.TOURNAMENT_SIZE:
         indivs.add(random.randint(0, len(pop) - 1))
     selected_i = list(indivs)
-    results = get_fitness_results([pop[i] for i in selected_i], X, y, fitness_eval=fitness_eval,
-                                  store_fitness='trainset_trainfit')
+    results = get_fitness_results([pop[i] for i in selected_i], X, y, fitness_eval)
 
     ranked_results = get_ranked_index(results)
-    winners_i = ranked_results[2:]
-    losers_i = ranked_results[:2]
+    winners_i = [selected_i[i] for i in ranked_results[2:]]
+    losers_i = [selected_i[i] for i in ranked_results[:2]]
     parents = [pop[i] for i in winners_i]
     for i in sorted(losers_i, reverse=True):
         del pop[i]
 
     var_op = np.random.choice([0, 1], p=var_op_probs)
     if var_op == 0:
-        progs = mutation([parents[0]]) + mutation([parents[1]])
+        progs = ops.mutation([parents[0]], env.ops, env.max_vals) + ops.mutation([parents[1]], env.ops, env.max_vals)
     elif var_op == 1:
-        progs = recombination(parents)
+        progs = ops.two_prog_recombination(parents)
 
     pop += progs
-    return pop
+
+    return pop, None
 
 
 # Breeder model for selection
-#@profile
-def breeder(X, y, pop, fitness_eval, gap=0.2, var_op_probs=[0.5, 0.5]):
-    env.pop_size = len(pop)
-    results = get_fitness_results(pop, X, y, fitness_eval=fitness_eval, store_fitness='trainset_trainfit')
-    ranked_index = get_ranked_index(results)
+# #@profile
+def breeder(data, env, pop, fitness_eval, hosts=None, var_op_probs=[0.5, 0.5]):
+    if hosts is None:
+        pop = prog_breeder(data, env, pop, fitness_eval, var_op_probs)
+    else:
+        pop, hosts = host_breeder(data, env, pop, fitness_eval, hosts)
+
+    return pop, hosts
+
+
+def prog_breeder(data, env, pop, fitness_eval, var_op_probs):
+    gap = env.breeder_gap
+    results = get_fitness_results(pop, data, fitness_eval)
     partition = len(pop) - int(len(pop) * gap)
-    #top_i = ranked_index[-partition:]
+    pop_size = len(pop)
+    ranked_index = get_ranked_index(results)
     bottom_i = ranked_index[:-partition]
     bottom_i.sort(reverse=True)
     for i in bottom_i:
         del pop[i]
 
-    while len(pop) < env.pop_size:
-        if len(pop) == (env.pop_size - 1):
+    while len(pop) < pop_size:
+        if len(pop) == (pop_size - 1):
             var_op = 0
         else:
             var_op = np.random.choice([0, 1], p=var_op_probs)
 
         if var_op == 0:
-            progs = mutation([np.random.choice(pop)])
+            progs = ops.mutation([np.random.choice(pop)], env.ops, env.max_vals)
         elif var_op == 1:
-            progs = recombination(np.random.choice(pop, 2, replace=False).tolist())
+            progs = ops.two_prog_recombination(np.random.choice(pop, 2, replace=False).tolist())
         pop += progs
+    return pop
+
+#@profile
+def host_breeder(data, env, pop, fitness_eval, hosts):
+    X, y = data.curr_X, data.curr_y
+    last_X = [data.X_train[i] for i in data.last_X_train[:50]]
+
+    partition = int(env.host_size - int(env.host_size * env.host_gap))
+    curr_hosts = hosts[hosts != np.array(None)]
+
+    new_hosts, pop = make_hosts(pop, curr_hosts, (env.host_size - partition), last_X, data.last_X_train[:50])
+
+    for i, host_i in enumerate([x for x in range(len(hosts)) if x not in np.nonzero(hosts)[0]]):
+        hosts[host_i] = new_hosts[i]
+
+    results = get_fitness_results(pop, X, y, fitness_eval, hosts=hosts, curr_i=data.curr_i)
+    ranked_index = get_ranked_index(results)
+    bottom_i = ranked_index[:-partition]
+    for i in bottom_i:
+        hosts[i] = None
+
+    # Remove symbionts no longer indexed by any hosts as a consequence of host deletion
+    unused_i = find_unused_symbionts(pop, hosts)
+    for i in unused_i:
+        pop[i] = None
+
+    while pop[-1] is None:
+        del pop[-1]
+
+    return pop, hosts
+
+#@profile
+def find_unused_symbionts(pop, hosts):
+    all_referenced = set([v for s in [host.progs_i.base for host in hosts if host is not None] for v in s])
+    return [i for i in range(len(pop)) if i not in all_referenced]
+
+#@profile
+def make_hosts(pop, hosts, num_new, X, X_i):
+    new_hosts = [h.copy() for h in np.random.choice(hosts, num_new)]
+
+    for host in new_hosts:
+        i = 1
+        test = 1
+        curr_progs = host.progs_i.base.tolist()
+
+        # Remove symbionts
+        while (test >= (env.prob_removal ** (i - 1))) and (len(curr_progs) > env.min_teamsize):
+            remove = np.random.choice(curr_progs)
+            curr_progs.remove(remove)
+            i += 1
+            test = np.random.rand()
+
+        # Add symbionts
+        i = 1
+        test = 1
+        options = [x for x in range(len(pop)) if x not in curr_progs and pop[x] is not None]
+        while (test >= (env.prob_add ** (i - 1))) and (len(curr_progs) < env.max_teamsize):
+            add = np.random.choice(options)
+            curr_progs.append(add)
+            i += 1
+            test = np.random.rand()
+        host.set_progs(array('i', curr_progs))
+    modify_symbionts(pop, new_hosts, X, X_i)
+
+    return new_hosts, pop
+
+#@profile
+def modify_symbionts(pop, hosts, X, X_i):
+    unused_i = [i for i in range(len(pop)) if pop[i] is None]
+    for host in hosts:
+        changed = 0
+        progs = host.progs_i.base.tolist()
+        while not changed:
+            for i in host.progs_i:
+                if np.random.rand() > env.prob_modify:
+                    symb = pop[i]
+
+                    new = copy_change_bid(symb, pop, X, X_i)
+
+                    # Test to change action
+                    if np.random.rand() > env.prob_change_label:
+                        new.class_label = np.random.choice(
+                            [cl for cl in data.classes.values() if cl != new.class_label])
+
+                    if unused_i:
+                        new_index = unused_i.pop()
+                        pop[new_index] = new
+                    else:
+                        new_index = len(pop)
+                        pop.append(new)
+
+                    progs.remove(i)
+                    progs.append(new_index)
+                    changed = 1
+        host.set_progs(array('i', progs))
 
     return pop
 
+#@profile
+def copy_change_bid(symb, pop, X, x_inds):
+    used_pop = np.asarray([pop[i] for i in range(len(pop)) if pop[i] is not None])
+    new = symb.copy()
+    test_passed = 0
+    temp_hosts = np.asarray([vm.Host()])
+    temp_hosts[0].set_progs(array('i', [0]))
+    test_pop = np.asarray([symb])
+    pop = np.asarray(pop)
+    difference = 0.0010
+
+    while not test_passed:
+        new = ops.mutation([new], env.ops, env.max_vals)[0]
+        ops.one_prog_recombination(new)
+        test_pop[0] = new
+
+        vm.host_y_pred(test_pop, temp_hosts, np.asarray(X), np.asarray(x_inds))
+        dup = new.is_duplicate(used_pop)
+        test_passed = 1 if not dup else 0
+    return symb
+
+
 
 #@profile
-def run_model(X, y, pop, selection, generations, X_test=None, y_test=None):
+def gen_points(X, y, data, index, gap):
+    partition = len(X) - int(len(X) * gap)
+    point_fit = vm.point_fitness(y)
+    ranked_index = get_ranked_index(point_fit)
+    bottom_i = ranked_index[:-partition]
+    max = len(data.X_train)
+
+    for i in bottom_i:
+        ind = np.random.randint(0, max)
+        while ind in index:
+            ind = np.random.randint(0, max)
+        index[i] = ind
+        X[i] = data.X_train[ind]
+        y[i] = data.y_train[ind]
+    return X, y, index
+
+
+# #@profile
+def run_model(X, y, pop, env, X_test, y_test, hosts=None):
     start = time.time()
     filename_prefix = utils.filenum()
-    validation = (env.use_validation and env.use_subset)
+    validation = env.use_validation
     max_fitness_gen, max_fitness, graph_iter = 0, 0, 0
+    sample_pop = hosts if env.bid_gp else pop
+    X_ind=None
+    print('File num: {}'.format(filename_prefix))
+
     # Components to graph
     to_graph = {
         'top_trainfit_in_trainset': 0,  # Top training fitness value in training set
@@ -288,31 +444,42 @@ def run_model(X, y, pop, selection, generations, X_test=None, y_test=None):
     trainfit_trainset_means, testfit_trainset_means, top_trainfit_in_trainset, top_prog_testfit_on_testset, top_testfit_in_trainset = [], [], [], [], []
     print_info()
 
-    if selection == const.Selection.STEADY_STATE_TOURN:
+    if env.selection == const.Selection.STEADY_STATE_TOURN:
         select = tournament
-    elif selection == const.Selection.BREEDER_MODEL:
+    elif env.selection == const.Selection.BREEDER_MODEL:
         select = breeder
     else:
-        raise ValueError('Invalid selection: {}'.format(selection))
+        raise ValueError('Invalid selection: {}'.format(env.selection))
 
     for i in range(env.generations):
-        assert len(pop) == env.pop_size
+        if not env.bid_gp:
+            assert len(pop) == env.pop_size
         print('.', end='')
         sys.stdout.flush()
 
         # Re-sample from validation and training sets if using subsets
         if env.use_subset:
-            X, y = env.subset_sampling(data, env.subset_size)
+            if env.point_fitness and i != 0:
+                X, y, X_ind = gen_points(X, y, data, X_ind, env.point_gap)
+            else:
+                X, y, X_ind = env.subset_sampling(data, env.subset_size)
             # TODO: remove train examples from this? (use prev. valid data?)
             if validation:
-                X_valid, y_valid = env.subset_sampling(data, env.validation_size)
-        pop = select(X, y, pop, env.train_fitness_eval)
+                X_valid, y_valid, _ = env.subset_sampling(data, env.validation_size)
 
+        data.curr_X, data.curr_y = X, y
+        if env.use_subset:
+            data.curr_i = np.asarray(X_ind)
+        pop, hosts = select(data, env, pop, env.train_fitness_eval, hosts=hosts)
+        if env.use_subset:
+            data.last_X_train = np.asarray(X_ind)
+        curr_hosts = hosts[hosts != np.array(None)]
         # Run train/test fitness evaluations for data to be graphed
         if (i % env.graph_step == 0) or (i == (env.generations - 1)):
             graph_iter += 1
             if to_graph['top_trainfit_in_trainset'] or (env.train_fitness_eval == env.test_fitness_eval):
-                trainset_results_with_trainfit = get_fitness_results(pop, X, y, fitness_eval=env.train_fitness_eval)
+                trainset_results_with_trainfit = get_fitness_results(pop, X, y, env.train_fitness_eval,
+                                                                     hosts=curr_hosts, curr_i=X_ind)
                 top_trainfit_in_trainset.append(max(trainset_results_with_trainfit))
                 trainfit_trainset_means.append(np.mean(trainset_results_with_trainfit))
 
@@ -322,24 +489,40 @@ def run_model(X, y, pop, selection, generations, X_test=None, y_test=None):
                     xvals, yvals = X_valid, y_valid
                 else:
                     xvals, yvals = X, y
-                trainset_results_with_testfit = get_fitness_results(pop, xvals, yvals,
-                                                                    fitness_eval=env.test_fitness_eval)
+                trainset_results_with_testfit = get_fitness_results(pop, xvals, yvals, env.test_fitness_eval,
+                                                                    hosts=curr_hosts)
                 top_testfit_in_trainset.append(max(trainset_results_with_testfit))
                 testfit_trainset_means.append(np.mean(trainset_results_with_testfit))
 
-            if (X_test is not None and y_test is not None) and to_graph['top_train_prog_on_test']:
+            if to_graph['top_train_prog_on_test']:
                 if env.train_fitness_eval == env.test_fitness_eval:
                     trainset_results_with_testfit = trainset_results_with_trainfit
-                testset_results_with_testfit = get_fitness_results([get_top_prog(pop, trainset_results_with_testfit)],
-                                                                   X_test, y_test, fitness_eval=env.test_fitness_eval)[
-                    0]
+
+                ### Fix this
+                if env.bid_gp:
+                    testset_results_with_testfit = get_fitness_results(pop, X_test, y_test, env.test_fitness_eval,
+                                                                       hosts=[get_top_prog(
+                                                                           curr_hosts, trainset_results_with_testfit)]
+                                                                       )[0]
+                else:
+                    testset_results_with_testfit = \
+                    get_fitness_results([get_top_prog(sample_pop, trainset_results_with_testfit)],
+                                        X_test, y_test, env.test_fitness_eval)[0]
                 top_prog_testfit_on_testset.append(testset_results_with_testfit)
                 if testset_results_with_testfit > max_fitness:
                     max_fitness = testset_results_with_testfit
                     max_fitness_gen = i
+
             if to_graph['percentages']:
-                cp = fit.class_percentages(get_top_prog(pop, trainset_results_with_testfit), X_test, y_test,
-                                           data.classes)
+                # TODO: should this be testset? - nope
+                if env.bid_gp:
+
+                    cp = fit.class_percentages(pop, X_test, y_test,
+                                               data.classes,
+                                               host=get_top_prog(curr_hosts, trainset_results_with_testfit))
+                else:
+                    cp = fit.class_percentages(get_top_prog(sample_pop, trainset_results_with_testfit), X_test, y_test,
+                                               data.classes)
                 for p in cp:
                     percentages[p].append(cp[p])
 
@@ -359,7 +542,6 @@ def run_model(X, y, pop, selection, generations, X_test=None, y_test=None):
                 graph_percs(filename_prefix, env.graph_step, graph_iter, percentages)
     plt.close('all')
 
-    # print_stats(pop, trainset_results_with_testfit, testset_results_with_testfit, top_prog_testfit_on_testset)
     print("Max fitness: {} at generation {}".format(max_fitness, max_fitness_gen))
     print("\nTime: {}".format(time.time() - start))
     return pop, trainset_results_with_trainfit, trainset_results_with_testfit, testset_results_with_testfit
@@ -389,7 +571,7 @@ def print_stats(pop, train_results_with_test_fit, test_results_with_test_fit, te
 
 def graph(n, graph_step, last_x, top_train_fit_on_train=None, train_means=None, test_means=None,
           top_train_prog_on_test=None, top_test_fit_on_train=None):
-    gens = [i*graph_step for i in range(last_x)]
+    gens = [i * graph_step for i in range(last_x)]
 
     fig = plt.figure(figsize=(13, 13), dpi=80)
     ax = fig.add_subplot(111)
@@ -399,6 +581,7 @@ def graph(n, graph_step, last_x, top_train_fit_on_train=None, train_means=None, 
         'Best {} Prog on Test Set (using test_fit)'.format(valid_train),
         'Best Train Prog on {} Set (using test_fit)'.format(valid_train)
     ]
+
     if top_train_fit_on_train:
         ax.plot(gens, top_train_fit_on_train, label=labels[0])
     if train_means:
@@ -415,12 +598,13 @@ def graph(n, graph_step, last_x, top_train_fit_on_train=None, train_means=None, 
     if env.use_validation:
         valid_str = ', Validation Size: {}'.format(env.validation_size)
     op_str = ', '.join([const.OPS[x] for x in env.ops])
-    plt.title('Data: {}\nSelection: {}\nPop Size: {}, Generations: {}, Step Size: {}{}{}\nTraining Fitness: {}, '
-              'Test Fitness: {}\nOps: {}, Alpha: {}'.format(env.data_file, env.selection.value, env.pop_size,
-                                                            env.generations,
-                                                            env.graph_step, subset_str, valid_str,
-                                                            env.train_fitness_eval.__name__,
-                                                            env.test_fitness_eval.__name__, op_str, env.alpha))
+    plt.title(
+        'Data: {}\nSelection: {}, Bid GP: {}, Point Fitness: {}\nPop Size: {}, Generations: {}, Step Size: {}{}{}\nTraining Fitness: {}, '
+        'Test Fitness: {}\nOps: [{}], Alpha: {}'.format(env.data_file, env.selection.value, env.bid_gp, env.point_fitness,
+                                                        env.pop_size, env.generations,
+                                                        env.graph_step, subset_str, valid_str,
+                                                        env.train_fitness_eval.__name__,
+                                                        env.test_fitness_eval.__name__, op_str, env.alpha))
     plt.legend(loc=9, bbox_to_anchor=(0.5, -0.03), fontsize=8)
     plt.grid(which='both', axis='both')
     ax.set_xlim(xmin=0)
@@ -437,7 +621,7 @@ def graph(n, graph_step, last_x, top_train_fit_on_train=None, train_means=None, 
 
 
 def graph_percs(n, graph_step, last_x, percentages):
-    generations = [i*graph_step for i in range(last_x)]
+    generations = [i * graph_step for i in range(last_x)]
 
     fig = plt.figure(figsize=(13, 13), dpi=80)
     ax = fig.add_subplot(111)
@@ -470,67 +654,6 @@ def save_figure(filename, fig, print_alert=False):
     plt.close('all')
 
 
-#@profile
-def get_average_fitness(env, num_trials, train_fitness_eval, test_fitness_eval=None):
-    if not test_fitness_eval:
-        test_fitness_eval = train_fitness_eval
-
-    max_test_fitness_on_train, mean_test_fitness_on_train, top_test_fitness_on_train, = [], [], []
-    top_test_fitness, top_train_prog_on_test = [], []
-
-    for i in range(num_trials):
-        # New train/test data split for each trial if train/test data isn't pre-split
-        try:
-            const.TEST_DATA_FILES[env.data_file]
-        except KeyError:
-            env.load_data()
-
-        print('Trial: {}'.format(i + 1))
-        pop = gen_population(env.pop_size)
-        pop, train_results_with_train_fit, train_results_with_test_fit, test_result_with_test_fit = run_model(
-            data.X_train, data.y_train, pop,
-            env.selection, env.generations,
-            X_test=data.X_test,
-            y_test=data.y_test)
-
-        max_test_fitness_on_train.append(max(train_results_with_test_fit))
-        mean_test_fitness_on_train.append(np.mean(train_results_with_test_fit))
-        top_train_prog_on_test.append(test_result_with_test_fit)
-
-        print('\nTop program (from train_fitness on training set):')
-        print('Test_fitness on test set: {} \nTest_fitness on train set: {}'.format(test_result_with_test_fit,
-                                                                                    max(train_results_with_test_fit)))
-
-        top_prog = get_top_prog(pop, train_results_with_test_fit)
-        train_cl = fit.class_percentages(top_prog, data.X_train, data.y_train, data.classes)
-        test_cl = fit.class_percentages(top_prog, data.X_test, data.y_test, data.classes)
-        print('Test class percentages: {}\nTrain class percentages (all training): {}'.format(test_cl, train_cl))
-
-        test_fit_on_test = get_fitness_results(pop, data.X_test, data.y_test, fitness_eval=test_fitness_eval,
-                                               store_fitness='testset_testfit')
-        top_test_result = max(test_fit_on_test)
-        top_result_i = test_fit_on_test.index(top_test_result)
-        top_prog_from_test_on_train = \
-        get_fitness_results([pop[top_result_i]], data.X_train, data.y_train, test_fitness_eval,
-                            store_fitness='trainset_testfit')[0]
-        top_test_fitness.append(top_test_result)
-        top_test_fitness_on_train.append(top_prog_from_test_on_train)
-
-        print('\nTop program (from test_fitness on test set):')
-        print('Top test_fitness in test set: {} \nTest_fitness on train set for top: {}'.format(top_test_result,
-                                                                                                top_prog_from_test_on_train))
-
-    avg_max, avg_mean, avg_test = np.mean(max_test_fitness_on_train), np.mean(mean_test_fitness_on_train), np.mean(
-        top_train_prog_on_test)
-    avg_top_test, avg_top_on_train = np.mean(top_test_fitness), np.mean(top_test_fitness_on_train)
-
-    print('\nTrials: {}\nAverage max test_fitness on train: {}\nAverage mean test_fitness on train: {}\n'
-          'Average test_fitness on test: {}\n'.format(num_trials, avg_max, avg_mean, avg_test))
-    print('Average top test_fitness on test: {}\n'
-          'Average top test_fitness on train, from top test_fitness on test: {}\n'.format(avg_top_test,
-                                                                                          avg_top_on_train))
-
-
 def get_ranked_index(results):
     return [x[0] for x in sorted(enumerate(results), key=lambda i: i[1])]
 
@@ -541,44 +664,48 @@ def get_top_prog(pop, results):
 
 def print_info():
     print('Population size: {}\nGenerations: {}\nData: {}\nSelection Replacement: {}\n'
-          'Alpha: {}\n'.format(env.pop_size, env.generations, env.data_file, env.selection.name, env.alpha))
+          'Alpha: {}\nBid: {}\nPoint Fitness: {}\n'.format(env.pop_size, env.generations, env.data_file,
+                                                           env.selection.name, env.alpha, env.bid_gp, env.point_fitness))
 
 
-#@profile
-def main():
-    trials = 1
-    # get_average_fitness(env, trials, train_fitness_eval=env.train_fitness_eval, test_fitness_eval=env.test_fitness_eval)
-    pop = gen_population(env.pop_size)
-    # run_model(data.X_train, data.y_train, pop,
-    #           env.selection, env.generations,
-    #           X_test=data.X_test,
-    #           y_test=data.y_test)
-    # pred = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]
-    # pred = array('i', pred)
-    # fit.fitness_sharing(pop, data.X_train, data.y_train)
-    #all_y_pred = [fit.predicted_classes(prog, data.X_train) for prog in pop]
-    # for prog in pop:
-    #     prog.prog = np.array(prog.prog)
-    #all_y_pred=vm.y_pred(np.asarray(pop), data.X_train)
-    # vm.fitness_sharing(np.asarray(pop), data.X_train, pred)
-    #fit.avg_detect_rate(pop[0], data.y_train, pred)
-    #pop[0].run_prog(data.X_train[0])
-    tournament(data.X_train, data.y_train, pop, env.train_fitness_eval)
-    #breeder(data.X_train, data.y_train, pop, env.train_fitness_eval)
-
-
-
-def init_vm():
-    vm.init(const.GEN_REGS, env.num_ipregs, env.output_dims)
+def init_vm(env, data):
+    vm.init(const.GEN_REGS, env.num_ipregs, env.output_dims, env.bid_gp, len(data.X_train))
 
 
 env = Config()
 data = Data()
 if env.data_file:
     data.load_data(env)
-    init_vm()
+    init_vm(env, data)
+
+pop = gen_population(env.pop_size)
+hs = gen_hosts(pop, data)
+
+
+# #@profile
+def main():
+    trials = 1
+    # get_average_fitness(env, trials, train_fitness_eval=env.train_fitness_eval, test_fitness_eval=env.test_fitness_eval)
+    pop = gen_population(env.pop_size)
+    if not env.bid_gp:
+        hs = None
+    else:
+        hs = gen_hosts(pop, data)
+
+    run_model(data.X_train, data.y_train, pop, env, data.X_test, data.y_test, hosts=hs)
+
+    # pred = array('i', pred)
+    # fit.fitness_sharing(pop, data.X_train, data.y_train)
+    # all_y_pred = [fit.predicted_classes(prog, data.X_train) for prog in pop]
+    # for prog in pop:
+    #     prog.prog = np.array(prog.prog)
+    # all_y_pred=vm.y_pred(np.asarray(pop), data.X_train)
+    # vm.fitness_sharing(np.asarray(pop), data.X_train, pred)
+    # fit.avg_detect_rate(pop[0], data.y_train, pred)
+    # pop[0].run_prog(data.X_train[0])
+    # tournament(data.X_train, data.y_train, pop, env.train_fitness_eval)
+    # breeder(data.X_train, data.y_train, pop, env.train_fitness_eval)
+
 
 if __name__ == '__main__':
     main()
-    #import cProfile
-    #cProfile.run('main()', sort='time')

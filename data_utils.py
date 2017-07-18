@@ -1,4 +1,4 @@
-import const, matplotlib, pdb
+import const, matplotlib, gzip, pdb
 import numpy as np
 
 matplotlib.use('Agg')
@@ -18,10 +18,22 @@ def load_data(fname, split=','):
     return data
 
 
+def load_mnist():
+    X_train = np.frombuffer(gzip.open(const.MNIST_DATA_FILES['X_train'], 'rb').read(), dtype=np.float64).reshape(60000,
+                                                                                                                 784)
+    X_test = np.frombuffer(gzip.open(const.MNIST_DATA_FILES['X_test'], 'rb').read(), dtype=np.float64).reshape(10000,
+                                                                                                               784)
+    y_train = np.frombuffer(gzip.open(const.MNIST_DATA_FILES['y_train'], 'rb').read(), dtype=np.uint8).astype(np.intc)
+    y_test = np.frombuffer(gzip.open(const.MNIST_DATA_FILES['y_test'], 'rb').read(), dtype=np.uint8).astype(np.intc)
+    return_vals = [X_train, y_train, X_test, y_test]
+    for arr in return_vals:
+        arr.flags.writeable = True
+    return return_vals
+
+
 def get_classes(data):
     classes = sorted(set(data))
     classmap = {}
-    # Check for numeric classes
     for i in range(len(classes)):
         cl = classes[i]
         classmap[cl] = i
@@ -42,7 +54,10 @@ def standardize(train, test, method, alpha=1):
                     vals0[col], vals1[col] = np.std(m_transpose[col]), np.mean(m_transpose[col])
                 std, mean = vals0[col], vals1[col]
                 for row in range(len(m)):
-                    m[row, col] = alpha * ((m.item(row, col) - mean) / std)
+                    if std != 0:
+                        m[row, col] = alpha * ((m.item(row, col) - mean) / std)
+                    else:
+                        m[row, col] = 0
             standardized.append(m.tolist())
         elif method is const.StandardizeMethod.LINEAR_TRANSFORM:
             # vals0 = min_x, vals1 = max_x
@@ -51,7 +66,11 @@ def standardize(train, test, method, alpha=1):
                     vals0[col], vals1[col] = min(m_transpose[col].tolist()[0]), max(m_transpose[col].tolist()[0])
                 min_x, max_x = vals0[col], vals1[col]
                 for row in range(len(m)):
-                    m[row, col] = alpha * ((m.item(row, col) - min_x) / (max_x - min_x))
+                    denom = max_x - min_x
+                    if denom != 0:
+                        m[row, col] = alpha * ((m.item(row, col) - min_x) / denom)
+                    else:
+                        m[row, col] = 0
             standardized.append(m.tolist())
         else:
             raise AttributeError('Invalid standardize method')
@@ -88,17 +107,19 @@ def even_data_subset(data, subset_size):
 
     data_by_classes = data.data_by_classes
     subset_size = int(subset_size / len(data_by_classes))
-    subset_x, subset_y = [], []
+    subset_x, subset_y, x_ind = [], [], []
 
     for i in data_by_classes:
         class_size = len(data_by_classes[i])
+
         if class_size <= subset_size:
             subset_size = class_size
-            subset_x += data_by_classes[i]
+            x_ind += data_by_classes[i]
         else:
-            subset_x += train_test_split(data_by_classes[i], train_size=(subset_size / class_size))[0]
+            x_ind += train_test_split(data_by_classes[i], train_size=(subset_size / class_size))[0]
         subset_y += [i] * subset_size
-    return np.array(subset_x), array('i', subset_y)
+    subset_x = [data.X_train[i] for i in x_ind]
+    return np.array(subset_x), array('i', subset_y), x_ind
 
 
 def uniformprob_data_subset(data, subset_size):

@@ -9,22 +9,20 @@ Fitness evaluation functions
 '''
 
 
-def accuracy(prog, y, y_pred, store_fitness=None):
+def accuracy(prog, y, y_pred):
     acc = accuracy_score(y, y_pred)
-    if store_fitness:
-        setattr(prog, store_fitness, acc)
     return acc
 
 
 #@profile
-def avg_detect_rate(prog, y, y_pred, store_fitness=None):
+def avg_detect_rate(prog, y, y_pred):
     fitness = vm.avg_detect_rate(prog, y, array('i', y_pred))
     return fitness
 
 
 #@profile
-def fitness_sharing(pop, X, y):
-    fitness = vm.fitness_sharing(pop, X, y)
+def fitness_sharing(pop, X, y, hosts=None, curr_i=None):
+    fitness = vm.fitness_sharing(pop, X, y, hosts, curr_i)
     return fitness
 
 #@profile
@@ -36,9 +34,13 @@ def predicted_classes(prog, X, fitness_sharing=0):
     return y_pred
 
 
-def class_percentages(prog, X, y, classes):
+def class_percentages(prog, X, y, classes, host=None):
     percentages = {}
-    y_pred = vm.y_pred(np.asarray([prog]), X)[0]
+
+    if host is not None:
+        y_pred = vm.host_y_pred(np.asarray(prog), np.asarray([host]), X, None)[0]
+    else:
+        y_pred = vm.y_pred(np.asarray([prog]), X)[0]
 
     for cl in classes:
         cl_results = [i for i in range(len(y)) if y[i] == classes[cl]]

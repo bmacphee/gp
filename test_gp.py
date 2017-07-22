@@ -29,10 +29,7 @@ EXPECTED_Y = ['4', '4', '4', '3', '3', '3', '2', '2', '1', '1']
 EXPECTED_Y_STR = ['test0', 'test3', 'test2', 'test1', 'test0', 'test0', 'test3', 'test2', 'test2', 'test1']
 
 
-@pytest.fixture
-def strlabeldata():
-    filename = 'data/test/test_strlbl.data'
-    return gp.load_data(filename)
+
 
 @pytest.fixture
 def env():
@@ -57,6 +54,12 @@ def make_data(env):
     data.load_data(env)
     gp.data = data
     return data
+
+@pytest.fixture
+def strlabeldata(data):
+    filename = 'data/test/test_strlbl.data'
+    return gp.load_data(filename)
+
 
 def test_load_data():
      d = gp.load_data(TEST_DATA)
@@ -109,19 +112,22 @@ def test_set_classes(env, data):
          [EXPECTED_X[2], EXPECTED_X[1], EXPECTED_X[0]]
     ]
 
-    data.classes = gp.get_classes(EXPECTED_Y)
+    #data.classes = gp.get_classes(EXPECTED_Y)
 
-    assert data.data_by_classes is None
+    assert data.data_by_classes == {}
+    data.X_train = EXPECTED_X
+    data.y_train = EXPECTED_Y
     data.set_classes(EXPECTED_X, expected_yvals)
-    data = data.data_by_classes
-    assert data is not None
-    assert len(data) == len(expected_lens)
+    data_cl = data.data_by_classes
+    assert data_cl is not None
+    assert len(data_cl) == len(expected_lens)
 
     for i, cl in enumerate(sorted(set(expected_yvals))):
-        assert len(data[cl]) == expected_lens[i]
-        for j in data[cl]:
-            assert j in expected_vals[i]
-            expected_vals[i].remove(j)
+        assert len(data_cl[cl]) == expected_lens[i]
+        for j in data_cl[cl]:
+            ex = data.X_train[j]
+            assert ex in expected_vals[i]
+            expected_vals[i].remove(ex)
         assert len(expected_vals[i]) == 0
 
 
@@ -317,11 +323,11 @@ def test_predicted_classes():
     pass
 
 def test_avg_detect_rate():
-    y = [1, 1, 1, 2, 2, 3]
+    y = array('i', [1, 1, 1, 2, 2, 3])
     y_pred = [1, 1, 1, 2, 0, 0]
     expected = ((3/3) + (1/2) + (0/1)) / 3
-    prog = vm.Prog([0])
-    rate = gp.avg_detect_rate(prog, y, y_pred)
+    prog = vm.Prog([[0]])
+    rate = fit.avg_detect_rate(prog, y, y_pred)
     assert rate == expected
 
 def test_breeder(env, data):
@@ -385,9 +391,10 @@ def test_tourn(env, data):
 
 def test_host_y_pred(env):
     ip = np.array([[45.0, 0.0, 8.0]])
-    vm.init(8, 3, 2, 1)
+    vm.init(8, 3, 2, 1, 1)
 
     progs = [[0],[0],[0],[1]], [[0],[0],[1],[0]], [[0],[0],[2],[0]]
+    x_inds = np.array([0])
     pop = []
     for i, p in enumerate(progs):
         prog = vm.Prog(p)
@@ -399,11 +406,11 @@ def test_host_y_pred(env):
     hosts[0].set_progs(array('i', [0, 1, 2]))
 
 
-    y_pred = vm.host_y_pred(pop, hosts, ip)
+    y_pred = vm.host_y_pred(pop, hosts, ip, x_inds)
     assert y_pred[0] == pop[0].class_label
 
     hosts[0].set_progs(array('i', [1, 2]))
-    y_pred = vm.host_y_pred(pop, hosts, ip)
+    y_pred = vm.host_y_pred(pop, hosts, ip, x_inds)
     assert y_pred[0] == pop[2].class_label
 
 
@@ -430,6 +437,19 @@ def test_point_fitness(env, data):
     X, y, index = gp.gen_points(pts[:], y_act[:], data, index, 0.2)
     assert X[0] == data.X_train[4]
     assert y[0] == data.y_train[4]
+
+
+def test_is_duplicate(env):
+    vm.init(8, 3, 1, 1) # 8 gen regs, 3 ip regs, 1 out dims, 1 bid, 1 trainsize
+    progs = [[0], [0], [0], [1]]    # Target: 0 (gen regs), Source: 0 (ip), Op: +
+    ip = np.array([[1.0, 1.0, 1.0]])
+    prog = vm.Prog(progs)
+    pop = np.asarray(prog)
+    hosts = np.asarray(vm.Host())
+    hosts[0].set_progs(array('i', [0]))
+    x_inds = np.asarray([0])
+
+    vm.host_y_pred(pop, hosts, )
 
 
 

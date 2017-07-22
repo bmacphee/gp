@@ -6,15 +6,22 @@ from sklearn.model_selection import train_test_split
 from array import array
 
 
+class Point:
+    def __init__(self, index, data):
+        self.index = index
+        self.data = data
+
+
 # Initializing data
 def load_data(fname, split=','):
     data = []
     with open(fname, 'r') as f:
-        for line in f:
+        for i, line in enumerate(f):
             l = line.split(split)
             if l[-1][-1] == '\n':
                 l[-1] = l[-1][:-1]
             data.append(l)
+            #data.append(Point(i, l))
     return data
 
 
@@ -106,10 +113,11 @@ def even_data_subset(data, subset_size):
         data.set_classes(data.X_train, data.y_train)
 
     data_by_classes = data.data_by_classes
-    subset_size = int(subset_size / len(data_by_classes))
+    orig_subset_size = int(subset_size / len(data_by_classes))
     subset_x, subset_y, x_ind = [], [], []
 
     for i in data_by_classes:
+        subset_size = orig_subset_size
         class_size = len(data_by_classes[i])
 
         if class_size <= subset_size:
@@ -119,6 +127,10 @@ def even_data_subset(data, subset_size):
             x_ind += train_test_split(data_by_classes[i], train_size=(subset_size / class_size))[0]
         subset_y += [i] * subset_size
     subset_x = [data.X_train[i] for i in x_ind]
+
+    if not data.act_subset_size:
+        data.act_subset_size = len(subset_x)
+
     return np.array(subset_x), array('i', subset_y), x_ind
 
 
@@ -126,4 +138,9 @@ def uniformprob_data_subset(data, subset_size):
     X = data.X
     y = data.y
     subset_x, temp, subset_y, temp = train_test_split(X, y, train_size=(subset_size / len(X)))
+
+    if not data.act_subset_size:
+        data.act_subset_size = len(subset_x)
     return np.array(subset_x), array('i', subset_y)
+
+

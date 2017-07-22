@@ -38,7 +38,7 @@ def class_percentages(prog, X, y, classes, host=None):
     percentages = {}
 
     if host is not None:
-        y_pred = vm.host_y_pred(np.asarray(prog), np.asarray([host]), X, None)[0]
+        y_pred = vm.host_y_pred(np.asarray(prog), np.asarray([host]), X, None, 0)[0]
     else:
         y_pred = vm.y_pred(np.asarray([prog]), X)[0]
 

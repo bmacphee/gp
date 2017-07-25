@@ -9,13 +9,14 @@ Fitness evaluation functions
 '''
 
 
-def accuracy(prog, y, y_pred):
-    acc = accuracy_score(y, y_pred)
+def accuracy(prog, y, y_pred, hosts=None):
+    acc = accuracy_score(y.tolist(), y_pred)
     return acc
 
 
 #@profile
 def avg_detect_rate(prog, y, y_pred):
+    y = array('i', y) if type(y) == list else y
     fitness = vm.avg_detect_rate(prog, y, array('i', y_pred))
     return fitness
 

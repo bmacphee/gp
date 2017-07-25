@@ -98,9 +98,11 @@ cdef class Host:
 
 
 
+
 cdef class Prog:
     cdef public DTYPE_I_t[:,::1] prog
     cdef public int class_label
+    cdef public int active
     #cdef public DTYPE_D_t[:] bid_vals
     cdef public DTYPE_D_t[:,::1] bid_vals
     cdef public DTYPE_D_t[:] first_50_regs
@@ -128,6 +130,7 @@ cdef class Prog:
         self.effective_instrs = array.array('i')[:]
         self.class_label = -1
         self.ex_num = -1
+        self.active = 0
 
         self.bid_vals = np.zeros((train_size, 2))
         self.first_50_regs = np.asarray([-1]*50, dtype=DTYPE_D)
@@ -310,6 +313,7 @@ cpdef np.ndarray host_y_pred(Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, DTY
                     max_ind = prog_i
 
             prog = pop[max_ind]
+            prog.active = 1
             curr_y_pred = prog.class_label
             y_pred[j] = curr_y_pred
         all_y_pred[:, i] = y_pred

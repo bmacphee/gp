@@ -114,6 +114,7 @@ def even_data_subset(data, subset_size):
 
     data_by_classes = data.data_by_classes
     orig_subset_size = int(subset_size / len(data_by_classes))
+    assert orig_subset_size > 0, 'Subset size not large enough for number of classes: {}'.format(len(data_by_classes))
     subset_x, subset_y, x_ind = [], [], []
 
     for i in data_by_classes:
@@ -124,7 +125,8 @@ def even_data_subset(data, subset_size):
             subset_size = class_size
             x_ind += data_by_classes[i]
         else:
-            x_ind += train_test_split(data_by_classes[i], train_size=(subset_size / class_size))[0]
+            x_ind += np.random.choice(data_by_classes[i], subset_size).tolist()
+            #x_ind += train_test_split(data_by_classes[i], train_size=(subset_size / class_size))[0]
         subset_y += [i] * subset_size
     subset_x = [data.X_train[i] for i in x_ind]
 
@@ -135,12 +137,15 @@ def even_data_subset(data, subset_size):
 
 
 def uniformprob_data_subset(data, subset_size):
-    X = data.X
-    y = data.y
+    X = data.X_train
+    y = data.y_train
     subset_x, temp, subset_y, temp = train_test_split(X, y, train_size=(subset_size / len(X)))
 
+    x_ind = np.random.choice(range(len(X)), subset_size)
+    subset_x = np.array([data.X_train[i] for i in x_ind])
+    subset_y = array('i', [data.y_train[i] for i in x_ind])
     if not data.act_subset_size:
         data.act_subset_size = len(subset_x)
-    return np.array(subset_x), array('i', subset_y)
+    return subset_x, subset_y, x_ind
 
 

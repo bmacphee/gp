@@ -17,14 +17,14 @@ data, env = None, None
 
 class Config:
     def __init__(self):
-        self.ops = array('i', [0, 1, 2, 3, 4, 5, 6, 7])  # Ops: [+, -, *, /, sin, e, ln, conditional]
-        self.pop_size = 10
-        self.generations = 2
-        self.graph_step = 100
-        self.graph_save_step = 200
+        self.ops = array('i', [0, 1, 2, 3, 4, 5, 6, 7])  # Ops [0:+, 1:-, 2:*, 3:/, 4:sin, 5:e, 6:ln, 7:conditional]
+        self.pop_size = 100
+        self.generations = 100
+        self.graph_step = 10
+        self.graph_save_step = 10
         self.data_files = ['data/iris.data', 'data/tic-tac-toe.data', 'data/ann-train.data', 'data/shuttle.trn',
-                           'data/MNIST']
-        self.data_file = self.data_files[3]
+                           'data/MNIST', 'data/gisette_train.data']
+        self.data_file = self.data_files[2]
         self.standardize_method = const.StandardizeMethod.MEAN_VARIANCE
         self.selection = const.Selection.BREEDER_MODEL
         self.breeder_gap = 0.2
@@ -32,7 +32,7 @@ class Config:
         self.use_subset = 1
         self.subset_size = 200
         self.use_validation = self.use_subset
-        self.validation_size = 200
+        self.validation_size = self.subset_size
         self.test_size = 0.2
         self.num_ipregs = None
         self.output_dims = None
@@ -42,7 +42,7 @@ class Config:
         self.max_vals = []
 
         self.bid_gp = 1
-        self.point_fitness = 1
+        self.point_fitness = 0
         self.host_size = self.pop_size
         self.point_gap = 0.2
         self.host_gap = 0.5
@@ -86,19 +86,32 @@ class Data:
 
         else:
             data = dutil.load_data(config.data_file)
-            y = [ex[-1:len(ex)][0] for ex in data]
+            try:
+                labels = dutil.load_data(const.LABEL_FILES[config.data_file])
+                y = [int(i) for sublist in labels for i in sublist]
+                X = dutil.preprocess([ex for ex in data])
+            except KeyError:
+                y = [ex[-1:len(ex)][0] for ex in data]
+                X = dutil.preprocess([ex[:len(ex) - 1] for ex in data])
             self.classes = dutil.get_classes(y)
             y = np.array([self.classes[label] for label in y], dtype=np.int32)
-            X = dutil.preprocess([ex[:len(ex) - 1] for ex in data])
+
 
             # Data with corresponding test file - load train/test
             try:
-                test_data = dutil.load_data(const.TEST_DATA_FILES[config.data_file])
+                test_data_file =  const.TEST_DATA_FILES[config.data_file]
+                test_data = dutil.load_data(test_data_file)
                 X_train = X
-                X_test = dutil.preprocess([ex[:len(ex) - 1] for ex in test_data])
                 self.y_train = y
-                self.y_test = np.array([self.classes[label] for label in [ex[-1:len(ex)][0] for ex in test_data]],
-                                       dtype=np.int32)
+
+                try:
+                    X_test = dutil.preprocess([ex for ex in test_data])
+                    labels = dutil.load_data(const.LABEL_FILES[test_data_file])
+                    self.y_test = [self.classes[int(i)] for sublist in labels for i in sublist]
+                except KeyError:
+                    X_test = dutil.preprocess([ex[:len(ex) - 1] for ex in test_data])
+                    self.y_test = np.array([self.classes[label] for label in [ex[-1:len(ex)][0] for ex in test_data]],
+                                            dtype=np.int32)
             # Data with no corresponding test file - split into train/test
             except KeyError:
                 X_train, X_test, self.y_train, self.y_test = dutil.split_data(X, y, config.test_size)
@@ -153,7 +166,6 @@ def gen_prog(pr):
 def gen_population(pop_num):
     pop = [gen_prog(const.PROG_LENGTH) for _ in range(0, pop_num)]
     for p in pop:
-        # p.effective_instrs = fit.find_introns(p)
         vm.set_introns(p)
     return pop
 
@@ -196,6 +208,8 @@ def gen_hosts(pop, data):
 def init_hosts(hosts, data, pop):
     X, y, x_ind = dutil.even_data_subset(data, env.subset_size)
     vm.host_y_pred(np.asarray(pop), hosts, X, np.asarray(x_ind), 1)
+    data.curr_X = X
+    data.curr_y = y
     data.curr_i = np.array(x_ind) # for initial run, to set last_X_train value
 
 
@@ -224,7 +238,7 @@ Selection
 
 #@profile
 # Steady state tournament for selection
-def tournament(data, env, pop, fitness_eval, var_op_probs=[0.5, 0.5]):
+def tournament(data, env, pop, fitness_eval, var_op_probs=[0.5, 0.5], hosts=None):
     X, y = data.curr_X, data.curr_y
     indivs = set()
     while len(indivs) < const.TOURNAMENT_SIZE:
@@ -241,13 +255,12 @@ def tournament(data, env, pop, fitness_eval, var_op_probs=[0.5, 0.5]):
 
     var_op = np.random.choice([0, 1], p=var_op_probs)
     if var_op == 0:
-        progs = ops.mutation([parents[0]], env.ops, env.max_vals) + ops.mutation([parents[1]], env.ops, env.max_vals)
+        progs = ops.mutation([parents[0].copy()], env.ops, env.max_vals) + ops.mutation([parents[1].copy()], env.ops, env.max_vals)
     elif var_op == 1:
-        progs = ops.two_prog_recombination(parents)
-
+        progs = ops.two_prog_recombination([p.copy() for p in parents])
     pop += progs
 
-    return pop, None
+    return pop, hosts
 
 
 # Breeder model for selection
@@ -290,12 +303,12 @@ def prog_breeder(data, env, pop, fitness_eval, var_op_probs):
 
 #@profile
 def host_breeder(data, env, pop, fitness_eval, hosts):
-    #pdb.set_trace()
     X, y = data.curr_X, data.curr_y
     last_X = [data.X_train[i] for i in data.last_X_train[:50]]
 
     partition = int(env.host_size - int(env.host_size * env.host_gap))
     curr_hosts = hosts[hosts != np.array(None)]
+
 
     new_hosts, pop = make_hosts(pop, curr_hosts, (env.host_size - partition), last_X, data.last_X_train[:50])
 
@@ -305,9 +318,12 @@ def host_breeder(data, env, pop, fitness_eval, hosts):
     results = get_fitness_results(pop, X, y, fitness_eval, hosts=hosts, curr_i=data.curr_i)
     ranked_index = get_ranked_index(results)
     bottom_i = ranked_index[:-partition]
+
+
     for i in bottom_i:
         hosts[i] = None
 
+    clear_inactive_progs(pop, hosts, env.max_teamsize)
     # Remove symbionts no longer indexed by any hosts as a consequence of host deletion
     unused_i = find_unused_symbionts(pop, hosts)
     for i in unused_i:
@@ -317,6 +333,18 @@ def host_breeder(data, env, pop, fitness_eval, hosts):
         del pop[-1]
 
     return pop, hosts
+
+
+def clear_inactive_progs(pop, hosts, max_size):
+    for i in np.nonzero(hosts)[0]:
+        host = hosts[i]
+        host_size = host.progs_i.size
+        if host_size == max_size:
+            progs_i = host.progs_i.base[:]
+            inactive_progs = [progs_i[i] for i in range(host_size) if pop[progs_i[i]].active == 0]
+            if inactive_progs:
+                new_progs_i = array('i', [prog for prog in progs_i if prog not in inactive_progs])
+                host.set_progs(new_progs_i)
 
 
 #@profile
@@ -417,11 +445,11 @@ def copy_change_bid(symb, pop, X, x_inds):
 #@profile
 def gen_points(data, env, after_first_run=0):
     if env.bid_gp:
-        data.last_X_train = data.curr_i
+        data.last_X_train = data.curr_i[:]
 
     if env.use_subset:
         if env.point_fitness and after_first_run:
-            orig_ind = data.curr_i.copy()
+            orig_ind = data.curr_i[:]
 
             num_pts = len(data.curr_X)
             partition = num_pts - int(num_pts * env.point_gap)
@@ -484,8 +512,9 @@ def run_model(data, pop, env, hosts=None):
     for i in range(env.generations):
         if not env.bid_gp:
             assert len(pop) == env.pop_size  # Testing
-        print('.', end='')
-        sys.stdout.flush()
+        if (i % 100 == 0):
+            print('.', end='')
+            sys.stdout.flush()
 
         gen_points(data, env, after_first_run=i)
         X, y, X_ind = data.curr_X, data.curr_y, data.curr_i
@@ -611,6 +640,8 @@ def graph(n, graph_step, last_x, top_train_fit_on_train=None, train_means=None, 
     plt.legend(loc=9, bbox_to_anchor=(0.5, -0.03), fontsize=8)
     plt.grid(which='both', axis='both')
     ax.set_xlim(xmin=0)
+    if gens[-1] != 0:
+        ax.set_xlim(xmax=gens[-1])
     ax.set_ylim(ymax=1.02)
     ax.set_ylim(ymin=0)
     ax.yaxis.set_major_locator(MultipleLocator(.1))
@@ -634,6 +665,8 @@ def graph_percs(n, graph_step, last_x, percentages):
     plt.legend(bbox_to_anchor=(1.1, 1), fontsize=8)
     plt.grid(which='both', axis='both')
     ax.set_xlim(xmin=0)
+    if generations[-1] != 0:
+        ax.set_xlim(xmax=generations[-1])
     ax.set_ylim(ymax=1.02)
     ax.set_ylim(ymin=0)
     ax.yaxis.set_major_locator(MultipleLocator(.1))

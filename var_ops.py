@@ -21,13 +21,12 @@ def two_prog_recombination(progs):
 #@profile
 def one_prog_recombination(prog):
     prog_len = len(prog.prog[0])
-    p = np.matrix(prog.prog)
+    p = np.asmatrix(prog.prog).T
     lines = np.random.choice(range(prog_len), 2, replace=False)
 
-    temp = p[:,[lines[0]]]
-    p[:,lines[0]] = p[:,lines[1]]
-    p[:,lines[1]] = temp
-    prog.prog = p
+    temp = p[lines[0]].copy()
+    p[lines[0]] = p[lines[1]]
+    p[lines[1]] = temp
     prog.clear_effective_instrs()
     return prog
 
@@ -49,15 +48,17 @@ def mutation(progs, ops, max_vals, effective_mutations=False):
         else:
             num_lines = random.randint(min_lines, max_lines)
             lines = np.random.choice(list(range(max_lines)), size=num_lines, replace=False)
-        for index in lines:
+            cols = np.random.choice(len(prog.prog) - 1, size=num_lines)
+        for i in range(num_lines):
+            row, col = lines[i], cols[i]
             col = random.randint(0, len(prog.prog) - 1)
-            orig_val = prog.prog[col,index]
+            orig_val = prog.prog[col,row]
             if col == const.OP:
                 options = [x for x in ops if x != orig_val]
             else:
                 options = [x for x in range(max_vals[col]) if x != orig_val]
             new_val = np.random.choice(options)
-            prog.prog[col,index] = new_val
+            prog.prog[col,row] = new_val
         children.append(prog)
         prog.clear_effective_instrs()
     return children

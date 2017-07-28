@@ -15,9 +15,9 @@ def accuracy(prog, y, y_pred, hosts=None):
 
 
 #@profile
-def avg_detect_rate(prog, y, y_pred):
-    y = array('i', y) if type(y) == list else y
-    fitness = vm.avg_detect_rate(prog, y, array('i', y_pred))
+def avg_detect_rate(prog, y_act, y_pred):
+    y_act = array('i', y_act) if type(y_act) == list else y_act
+    fitness = vm.avg_detect_rate(prog, y_act, array('i', y_pred))
     return fitness
 
 

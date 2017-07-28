@@ -26,6 +26,7 @@ cpdef int prog_len = const.PROG_LENGTH
 cpdef int target_i = const.TARGET, source_i = const.SOURCE, mode_i = const.MODE, op_i = const.OP
 cpdef int bid_gp = 0
 cpdef int train_size = 0
+cpdef int id_num = 0
 
 cpdef DTYPE_I_t[:,::1] curr_ypred_state = None
 
@@ -65,14 +66,15 @@ cdef class Host:
         public int[:] progs_i
         #public array.array progs_i
         int num_progs
-        int[:] active_regs
+        array.array active_progs
+
     def __init__(self):
         self.clear_progs()
 
     cpdef set_progs(self, array.array progs):
         self.progs_i = progs
-        self.num_progs = progs.buffer_info()[1]
-        self.active_regs = array.array('i', [0]*self.num_progs)
+        self.num_progs = len(progs)
+
     # Does not protect from duplicates
     cpdef void add_progs(self, array.array prog_i):
         cdef array.array curr_progs = self.progs_i.base[:]
@@ -86,10 +88,26 @@ cdef class Host:
     cpdef void clear_progs(self):
         self.progs_i = array.array('i')
         self.num_progs = 0
-        self.active_regs = array.array('i')
+        self.active_progs = array.array('i')
 
     cpdef array.array get_progs(self):
         return self.progs_i.base
+
+    cpdef clear_inactive(self, int[:] pop_ids):
+        cdef:
+            int i, active
+            array.array new_progs = self.progs_i.base[:]
+
+        for i in range(len(self.progs_i)):
+            if pop_ids[self.progs_i[i]] not in self.active_progs:
+                new_progs.remove(self.progs_i[i])
+        self.set_progs(new_progs)
+
+    cpdef get_active(self):
+        return self.active_progs
+
+    cpdef set_active(self, array.array active):
+        self.active_progs = active
 
     cpdef copy(self):
         h = Host()
@@ -102,16 +120,13 @@ cdef class Host:
 cdef class Prog:
     cdef public DTYPE_I_t[:,::1] prog
     cdef public int class_label
-    cdef public int active
-    #cdef public DTYPE_D_t[:] bid_vals
     cdef public DTYPE_D_t[:,::1] bid_vals
     cdef public DTYPE_D_t[:] first_50_regs
-    cdef public DTYPE_I_t[:] first_50_inds
+    cdef public int prog_id
 
     cdef int[:] effective_instrs
     cdef DTYPE_I_t[:] test_y_pred
     cdef DTYPE_D_t* output_registers
-    #cdef DTYPE_D_t * bid_vals
     cdef int output_dims
     cdef int ex_num
 
@@ -119,26 +134,24 @@ cdef class Prog:
         global output_dims, train_size
         self.output_registers = <DTYPE_D_t*> malloc(sizeof(DTYPE_D_t)*output_dims)
         self.output_dims = output_dims
-        #self.bid_vals = < DTYPE_D_t * > malloc(sizeof(DTYPE_D_t) * train_size)
         if not self.output_registers:
             raise MemoryError()
 
 
     def __init__(self, list prog):
-        global train_size
+        global train_size, id_num
         self.prog = np.asarray(prog, dtype=DTYPE_I)
         self.effective_instrs = array.array('i')[:]
         self.class_label = -1
         self.ex_num = -1
-        self.active = 0
+        self.prog_id = id_num
+        id_num += 1
 
         self.bid_vals = np.zeros((train_size, 2))
         self.first_50_regs = np.asarray([-1]*50, dtype=DTYPE_D)
-        self.first_50_inds = np.asarray([-1]*50, dtype=DTYPE_I)
 
     def __dealloc__(self):
         free(self.output_registers)
-        #free(self.bid_vals)
 
     cpdef Prog copy(self):
         cdef:
@@ -147,7 +160,6 @@ cdef class Prog:
         pr = Prog(new_prog)
         pr.effective_instrs = array.array('i')
         pr.class_label = self.class_label
-        pr.first_50_inds = self.first_50_inds
         return pr
 
     cpdef void run_prog(self, DTYPE_D_t[:] ip):
@@ -206,32 +218,6 @@ cdef class Prog:
                 return 1
         return 0
 
-    cpdef void mutation(self, array.array ops, array.array max_vals):
-        cdef:
-            DTYPE_I_t max_lines = self.prog[0].size, min_lines = 1, num_lines, col, i, j, new_val
-            DTYPE_I_t[:] lines, options
-
-        num_lines = random.randint(min_lines, max_lines)
-        lines = np.random.choice(max_lines, num_lines, replace=False)
-
-        for i in range(len(lines)):
-            col = random.randint(0, 3)
-            orig_val = self.prog[col, i]
-
-            if col ==  2:
-                options = ops[:].base.remove(orig_val)
-            else:
-                options = np.array(range(max_vals[col]))
-                options.base.remove(orig_val)
-
-            new_val = np.random.choice(options)
-            self.prog[col,i] = new_val
-
-        self.clear_effective_instrs()
-
-
-
-
 
 cpdef DTYPE_I_t[:,::1] y_pred(Prog[:] progs, DTYPE_D_t[:,:] X):
     cdef:
@@ -257,7 +243,7 @@ cpdef DTYPE_I_t[:,::1] y_pred(Prog[:] progs, DTYPE_D_t[:,:] X):
     return all_y_pred
 
 
-cpdef np.ndarray host_y_pred(Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, DTYPE_I_t[:] x_inds, int change_regs):
+cpdef np.ndarray host_y_pred(Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, int[:] x_inds, int change_regs):
     cdef:
         DTYPE_I_t curr_y_pred, num_hosts = len(hosts), num_ex = len(X), x_ind
         DTYPE_I_t[:,::1] all_y_pred = np.empty((num_hosts, num_ex), dtype=DTYPE_I)
@@ -268,7 +254,7 @@ cpdef np.ndarray host_y_pred(Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, DTY
         Prog prog
         DTYPE_D_t[:] curr_ex
         DTYPE_D_t max_val, val
-        int k, prog_i, i, j, max_ind, host_ind, use_saved
+        int k, prog_i, i, j, max_ind = 0, host_ind, use_saved
 
     if x_inds is None:
         use_saved = 0
@@ -303,7 +289,6 @@ cpdef np.ndarray host_y_pred(Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, DTY
 
                 if change_regs and (i < 50):
                     prog.first_50_regs[i] = val
-                    prog.first_50_inds[i] = x_ind
 
                 if k == 0:
                     max_val = val
@@ -313,7 +298,8 @@ cpdef np.ndarray host_y_pred(Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, DTY
                     max_ind = prog_i
 
             prog = pop[max_ind]
-            prog.active = 1
+            if prog.prog_id not in host.active_progs:
+                host.active_progs.insert(0, prog.prog_id)
             curr_y_pred = prog.class_label
             y_pred[j] = curr_y_pred
         all_y_pred[:, i] = y_pred
@@ -327,6 +313,9 @@ cpdef DTYPE_D_t avg_detect_rate(prog, int[:] y, int[:] y_pred) except -1:
         DTYPE_D_t fitness = 0.0
         DTYPE_D_t* cl_results = <DTYPE_D_t*> malloc(sizeof(DTYPE_D_t)*num_classes)
         DTYPE_D_t* percentages = <DTYPE_D_t*> malloc(sizeof(DTYPE_D_t)*num_classes)
+
+    if num_classes == 0:
+        return 0
 
     if not cl_results or not percentages:
         raise MemoryError()
@@ -350,7 +339,7 @@ cpdef DTYPE_D_t avg_detect_rate(prog, int[:] y, int[:] y_pred) except -1:
     return fitness
 
 
-cpdef array.array fitness_sharing(Prog[:] pop, DTYPE_D_t[:,::1] X, int[:] y, Host[:] hosts, DTYPE_I_t[:] x_inds):
+cpdef array.array fitness_sharing(Prog[:] pop, DTYPE_D_t[:,::1] X, int[:] y, Host[:] hosts, int[:] x_inds):
     global curr_ypred_state
     cdef:
         size_t i, j, k

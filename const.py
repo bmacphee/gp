@@ -29,6 +29,13 @@ MNIST_DATA_FILES = {
     'y_test': 'data/mnist_ytest.gz'
 }
 
+FILE_NAMES = {
+    'graph_cumulative': '_cumulative_detectrate.png',
+    'graph_fitness': '_fitness.png',
+    'graph_percs': '_classes.png',
+    'graph_teamsize': '_team_size.png',
+}
+
 OPS = {
     0: '+',
     1: '-',

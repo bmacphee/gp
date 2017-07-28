@@ -32,6 +32,7 @@ class Results:
         self.trainfit_trainset_means.append(np.mean(trainset_with_trainfit))
 
     def update_testfit_trainset(self, trainset_with_testfit):
+        self.trainset_with_testfit = trainset_with_testfit
         self.top_testfit_in_trainset.append(max(trainset_with_testfit))
         self.testfit_trainset_means.append(np.mean(trainset_with_testfit))
 
@@ -59,8 +60,8 @@ class Results:
         graph_param = list(map(lambda x: graph_param[x] if graph_inc[x] else None, range(len(graph_param))))
         return graph_param
 
-    def save_objs(self, pop, hosts, data, env, file_prefix):
-        file_name = '{}_saved_data'.format(file_prefix)
+    def save_objs(self, pop, hosts, data, env):
+        file_name = '{}_saved_data'.format(env.file_prefix)
         date = time.strftime("%d_%m_%Y")
         filepath = os.path.join(const.JSON_DIR, date, file_name)
         save_pop = [SaveableProg(p) for p in pop]
@@ -144,11 +145,11 @@ class Data:
 
         config.num_ipregs = len(self.X_train[0])
         config.max_vals = array('i', [const.GEN_REGS, max(const.GEN_REGS, config.num_ipregs), -1, 2])
+        config.output_dims = 1  if config.bid_gp else len(self.classes)
 
-        if config.bid_gp:
-            config.output_dims = 1  # One bid register
-        else:
-            config.output_dims = len(self.classes)  # Register for each class
+        if config.use_subset and (len(self.X_train) < config.subset_size):
+            config.use_subset = 0
+            config.use_validation = 0
 
     def set_classes(self, X, y):
         for cl in self.classes.values():

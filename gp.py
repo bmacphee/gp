@@ -1,9 +1,5 @@
-import const, random, sys, time, utils, matplotlib, os, config, numpy as np, pdb
-import cythondir.vm as vm, var_ops as ops, fitness as fit, data_utils as dutil
-
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from matplotlib.ticker import MultipleLocator, AutoMinorLocator
+import const, random, sys, time, utils, config, numpy as np, pdb
+import graph, cythondir.vm as vm, var_ops as ops, fitness as fit, data_utils as dutil
 from importlib import reload
 from array import array
 
@@ -120,13 +116,13 @@ Results
 
 
 # @profile
-def fitness_results(pop, X, y, fitness_eval, hosts=None, curr_i=None):
+def fitness_results(pop, X, y_act, fitness_eval, hosts=None, curr_i=None):
     pop_arr = np.asarray(pop)
     if fitness_eval.__name__ == 'fitness_sharing':
-        results = fit.fitness_sharing(pop_arr, X, y, hosts, curr_i)
+        results = fit.fitness_sharing(pop_arr, X, y_act, hosts, curr_i)
     else:
         all_y_pred = vm.y_pred(pop_arr, X) if hosts is None else vm.host_y_pred(pop_arr, hosts, X, None, 0)
-        results = [fitness_eval(pop[i], y, all_y_pred[i]) for i in range(len(all_y_pred))]
+        results = [fitness_eval(pop[i], y_act, all_y_pred[i]) for i in range(len(all_y_pred))]
     return results
 
 
@@ -208,14 +204,13 @@ def host_breeder(data, env, pop, fitness_eval, hosts):
 
 
 def clear_inactive_progs(pop, hosts, max_size):
+    prog_ids = array('i', [-1]*len(pop))
+    for i in range(len(pop)):
+        if pop[i] is not None:
+            prog_ids[i] = pop[i].prog_id
     for i, host in enumerate(hosts):
-        host_size = host.progs_i.size
-        if host_size == max_size:
-            progs_i = host.progs_i
-            inactive_progs = [progs_i[i] for i in range(host_size) if pop[progs_i[i]].active == 0]
-            if inactive_progs:
-                new_progs_i = array('i', [prog for prog in progs_i if prog not in inactive_progs])
-                host.set_progs(new_progs_i)
+        if host.progs_i.size == max_size:
+            host.clear_inactive(prog_ids)
 
 
 # @profile
@@ -303,7 +298,8 @@ def copy_change_bid(symb, pop, X, x_inds):
 
 def run_model(data, pop, env, hosts=None):
     start = time.time()
-    filename_prefix = utils.filenum()
+    if env.file_prefix is None:
+        env.file_prefix = utils.filenum()
     graph_iter = 0
     sample_pop = hosts if env.bid_gp else pop
     stats = dutil.Results()
@@ -315,7 +311,7 @@ def run_model(data, pop, env, hosts=None):
         select = breeder
     else:
         raise ValueError('Invalid selection: {}'.format(env.selection))
-    print_info(env, filename_prefix)
+    print_info(env)
 
     for i in range(env.generations):
         if not env.bid_gp:
@@ -369,21 +365,24 @@ def run_model(data, pop, env, hosts=None):
         if not TESTING:
             if ((env.graph_save_step is not None) and (i % env.graph_save_step == 0)) or (i == env.generations - 1):
                 graph_params = stats.get_graph_params(env.to_graph)
-                graph(filename_prefix, env.graph_step, graph_iter, *graph_params)
+                graph.graph_fitness(graph_iter, data, env, *graph_params)
                 if env.to_graph['percentages']:
-                    graph_percs(filename_prefix, env.graph_step, graph_iter, stats.percentages)
+                    graph.graph_percs(graph_iter, stats.percentages, env)
                 if env.to_graph['cumulative_detect_rate']:
-                    cumulative = cumulative_detect_rate(data, pop, hosts, testset_with_testfit)
-                    graph_cumulative(filename_prefix, env.graph_step, graph_iter, cumulative)
-                plt.close('all')
+                    all_testset_with_testfit = fitness_results(pop, data.X_test, data.y_test, env.test_fitness,
+                                                               hosts=curr_hosts)
+                    cumulative = cumulative_detect_rate(data, pop, curr_hosts, all_testset_with_testfit, stats.trainset_with_testfit)
+                    graph.graph_cumulative(env, cumulative)
+                if env.to_graph['top_team_size']:
+                    graph.graph_teamsize(graph_iter, env, stats.num_progs_per_top_host)
 
     print("Max fitness: {}, generation {}\nTime: {}".format(stats.max_fitness, stats.max_fitness_gen,
                                                             time.time() - start))
-    stats.save_objs(pop, hosts, data, env, filename_prefix)
+    stats.save_objs(pop, hosts, data, env)
     return pop, hosts, stats
 
 
-def cumulative_detect_rate(data, pop, hosts, testset_with_testfit):
+def cumulative_detect_rate(data, pop, hosts, testset_with_testfit, trainset_with_testfit):
     # Move this later - is calculated twice
     if hosts is not None:
         curr_hosts = get_nonzero(hosts)
@@ -391,102 +390,19 @@ def cumulative_detect_rate(data, pop, hosts, testset_with_testfit):
     else:
         y_pred = vm.y_pred(np.asarray(pop), data.X_test)
     detect_rates = []
-    ranked = get_ranked_index(testset_with_testfit)
+    #ranked = get_ranked_index(testset_with_testfit)
+    ranked = get_ranked_index(trainset_with_testfit)
     top = y_pred[ranked[-1]]
 
     while len(ranked) > 0:
         addition = y_pred[ranked.pop()]
         top[addition == data.y_test] = addition[addition == data.y_test]
-        detect_rate = vm.avg_detect_rate(None, array('i', top), data.y_test)
+        detect_rate = vm.avg_detect_rate(None, data.y_test, array('i', top))
         detect_rates.append(detect_rate)
-
         if detect_rate == 1:
             break
-    detect_rates += [1.0]*(len(curr_hosts)-len(detect_rates))
+    detect_rates += [1.0] * (len(ranked))
     return detect_rates
-
-
-def graph_cumulative(filename_prefix, graph_step, graph_iter, cumulative):
-    pass
-
-
-def graph(n, graph_step, last_x, top_train_fit_on_train=None, train_means=None, test_means=None,
-          top_train_prog_on_test=None, top_test_fit_on_train=None):
-    gens = [i * graph_step for i in range(last_x)]
-    fig = plt.figure(figsize=(13, 13), dpi=80)
-    ax = fig.add_subplot(111)
-    valid_train = 'Validation' if env.use_validation else 'Train'
-    labels = [
-        'Max Train Fitness in Train Set', 'Mean Train Fitness in Train Set', 'Mean Test Fitness in Train Set',
-        'Best {} Prog on Test Set (using test_fit)'.format(valid_train),
-        'Best Train Prog on {} Set (using test_fit)'.format(valid_train)
-    ]
-
-    if top_train_fit_on_train:
-        ax.plot(gens, top_train_fit_on_train, label=labels[0])
-    if train_means:
-        ax.plot(gens, train_means, label=labels[1])
-    if test_means:
-        ax.plot(gens, test_means, label=labels[2])
-    if top_test_fit_on_train:
-        ax.plot(gens, top_test_fit_on_train, label=labels[4])
-    if top_train_prog_on_test:
-        ax.plot(gens, top_train_prog_on_test, label=labels[3])
-
-    subset_str = ', Subset Size: {}'.format(data.act_subset_size) if env.use_subset else ''
-    valid_str = ''
-    if env.use_validation:
-        valid_str = ', Validation Size: {}'.format(data.act_valid_size)
-    op_str = ', '.join([const.OPS[x] for x in env.ops])
-    plt.title(
-        'Data: {}\nSelection: {}, Bid GP: {}, Point Fitness: {}\nPop Size: {}, Generations: {}, Step Size: {}{}{}\n'
-        'Training Fitness: {}, Test Fitness: {}\nOps: [{}], Alpha: {}'.format(env.data_file, env.selection.value,
-                                                                              env.bid_gp,
-                                                                              env.point_fitness,
-                                                                              env.pop_size, env.generations,
-                                                                              env.graph_step, subset_str, valid_str,
-                                                                              env.train_fitness.__name__,
-                                                                              env.test_fitness.__name__, op_str,
-                                                                              env.alpha))
-    if gens[-1] != 0:
-        ax.set_xlim(xmax=gens[-1])
-    if TESTING == 0:
-        filename = '{}_fitness.png'.format(n)
-        save_figure(filename, fig)
-
-
-def graph_percs(n, graph_step, last_x, percentages):
-    generations = [i * graph_step for i in range(last_x)]
-    fig = plt.figure(figsize=(13, 13), dpi=80)
-    ax = fig.add_subplot(111)
-    labels = sorted([perc for perc in percentages])
-    for l in labels:
-        ax.plot(generations, percentages[l], label=l)
-    plt.title('% Classes Correct (Training data: {})'.format(env.data_file))
-    if generations[-1] != 0:
-        ax.set_xlim(xmax=generations[-1])
-    if TESTING == 0:
-        filename = '{}_classes.png'.format(n)
-        save_figure(filename, fig)
-
-
-def save_figure(filename, fig):
-    ax = fig.axes[0]
-    plt.legend(loc=9, bbox_to_anchor=(0.5, -0.03), fontsize=8)
-    plt.grid(which='both', axis='both')
-    ax.set_xlim(xmin=0)
-    ax.set_ylim(ymax=1.02)
-    ax.set_ylim(ymin=0)
-    ax.yaxis.set_major_locator(MultipleLocator(.1))
-    ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-    ax.xaxis.set_minor_locator(AutoMinorLocator(5))
-    plt.tick_params(which='both', width=1)
-
-    date = time.strftime("%d_%m_%Y")
-    filepath = os.path.join(const.IMAGE_DIR, date, filename)
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    fig.set_size_inches(22, 11)
-    fig.savefig(filepath, dpi=100)
 
 
 def get_ranked_index(results):
@@ -510,10 +426,10 @@ def get_nonzero(arr):
     return arr[np.nonzero(arr)[0]]
 
 
-def print_info(env, filename_prefix):
+def print_info(env):
     print('Population size: {}\nGenerations: {}\nData: {}\nSelection Replacement: {}\nAlpha: {}\nBid: {}\n'
           'Point Fitness: {}\nFile num: {}\n'.format(env.pop_size, env.generations, env.data_file, env.selection.name,
-                                                     env.alpha, env.bid_gp, env.point_fitness, filename_prefix))
+                                                     env.alpha, env.bid_gp, env.point_fitness, env.file_prefix))
 
 
 def init_vm(env, data):

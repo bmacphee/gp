@@ -1,13 +1,13 @@
 import const, matplotlib, gzip, time, os, pdb
 import numpy as np, jsonpickle as jp
-
+import jsonpickle.ext.numpy as jsonpickle_numpy
 matplotlib.use('Agg')
 from sklearn.model_selection import train_test_split
 from cythondir.vm import Prog, Host
 from array import array
 from copy import deepcopy
 
-
+jsonpickle_numpy.register_handlers()
 class Results:
     def __init__(self):
         self.percentages = {}
@@ -65,21 +65,22 @@ class Results:
         date = time.strftime("%d_%m_%Y")
         filepath = os.path.join(const.JSON_DIR, date, file_name)
         save_pop = [SaveableProg(p) for p in pop]
-        save_hosts = [SaveableHost(h) for h in hosts]
+        save_hosts = [SaveableHost(h) for h in hosts] if env.bid_gp else None
         save_data = deepcopy(data)
-        save_data.X_train = None
-        save_data.y_train = None
-        save_data.X_test = None
-        save_data.y_test = None
-        # Need last_X_train, or curr_ypred_state?
-        save_data.curr_X = save_data.curr_X.tolist()
-        save_data.curr_i = save_data.curr_i.tolist()
-        save_data.curr_y = save_data.curr_y.tolist()
         save_env = deepcopy(env)
+        set_none = ['X_train', 'y_train', 'X_test', 'y_test']
+        for attr in set_none:
+            setattr(save_data, attr, None)
+        # Need last_X_train, or curr_ypred_state?
+        convert_to_list = ['curr_X', 'curr_i', 'curr_y', 'last_X_train']
+        for attr in convert_to_list:
+            val = getattr(save_data, attr)
+            if val is not None:
+                setattr(save_data, attr, val.tolist())
+
         save_env.ops = save_env.ops.tolist()
 
         objs = jp.encode([save_pop, save_hosts, save_data, save_env, self])
-
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         with open(filepath, 'w') as outfile:
             outfile.write(objs)
@@ -195,6 +196,7 @@ def load_saved(filename):
     with open(filename, 'r') as f:
         objs = f.read()
     decoded = jp.decode(objs)
+
     pop = [x.convert_to_prog() for x in decoded[0]]
     hosts = np.asarray([x.convert_to_host() for x in decoded[1]])
     data = decoded[2]
@@ -206,7 +208,8 @@ def load_saved(filename):
     data.curr_y = array('i', data.curr_y)
     data.curr_y = array('i', data.curr_y)
     data.curr_i = array('i', data.curr_i)
-    data.load_data(env)
+    data.last_X_train = array('i', data.last_X_train)
+    #data.load_data(env)
     return pop, hosts, data, env, results
 
 

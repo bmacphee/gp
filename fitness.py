@@ -1,12 +1,21 @@
 import const, pdb
 import numpy as np
-import cythondir.vm as vm
+import utils, cythondir.vm as vm
 from sklearn.metrics import accuracy_score
 from array import array
 
 '''
 Fitness evaluation functions
 '''
+
+def fitness_results(pop, X, y_act, fitness_eval, hosts=None, curr_i=None):
+    pop_arr = np.asarray(pop)
+    if fitness_eval.__name__ == 'fitness_sharing':
+        results = fitness_sharing(pop_arr, X, y_act, hosts, curr_i)
+    else:
+        all_y_pred = vm.y_pred(pop_arr, X) if hosts is None else vm.host_y_pred(pop_arr, hosts, X, None, 0)
+        results = [fitness_eval(pop[i], y_act, all_y_pred[i]) for i in range(len(all_y_pred))]
+    return results
 
 
 def accuracy(prog, y, y_pred, hosts=None):
@@ -49,3 +58,24 @@ def class_percentages(prog, X, y, classes, host=None):
         percentages[cl] = perc
     return percentages
 
+
+def cumulative_detect_rate(data, pop, hosts, testset_with_testfit, trainset_with_testfit):
+    # Move this later - is calculated twice
+    if hosts is not None:
+        curr_hosts = utils.get_nonzero(hosts)
+        y_pred = vm.host_y_pred(np.asarray(pop), curr_hosts, data.X_test, None, 0)
+    else:
+        y_pred = vm.y_pred(np.asarray(pop), data.X_test).base
+    detect_rates = []
+    ranked = utils.get_ranked_index(trainset_with_testfit)
+    top = y_pred[ranked[-1]]
+
+    while len(ranked) > 0:
+        addition = y_pred[ranked.pop()]
+        top[addition == data.y_test] = addition[addition == data.y_test]
+        detect_rate = vm.avg_detect_rate(None, data.y_test, array('i', top))
+        detect_rates.append(detect_rate)
+        if detect_rate == 1:
+            break
+    detect_rates += [1.0] * (len(ranked))
+    return detect_rates

@@ -5,9 +5,10 @@ class Config:
     def __init__(self):
         self.ops = array('i', [0, 1, 2, 3, 4, 5, 6, 7])  # Ops [0:+, 1:-, 2:*, 3:/, 4:sin, 5:e, 6:ln, 7:conditional]
         self.pop_size = 100
-        self.generations = 500
+        self.generations = 50
         self.graph_step = 100
         self.graph_save_step = 100
+        self.json_save_step = 50000
         self.data_files = ['data/iris.data', 'data/tic-tac-toe.data', 'data/ann-train.data', 'data/shuttle.trn',
                            'data/MNIST', 'data/gisette_train.data']
         self.data_file = self.data_files[0]

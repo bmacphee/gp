@@ -1,5 +1,5 @@
 import const, random, sys, time, utils, config, numpy as np, pdb
-import graph, cythondir.vm as vm, var_ops as ops, fitness as fit, data_utils as dutil
+import graph, utils, cythondir.vm as vm, var_ops as ops, fitness as fit, data_utils as dutil
 from importlib import reload
 from array import array
 
@@ -85,7 +85,7 @@ def gen_points(data, env, after_first_run=0):
             num_pts = len(data.curr_X)
             partition = num_pts - int(num_pts * env.point_gap)
             point_fit = vm.point_fitness(data.curr_y)
-            ranked_index = get_ranked_index(point_fit)
+            ranked_index = utils.get_ranked_index(point_fit)
             bottom_i = ranked_index[:-partition]
             max_val = len(data.X_train)
 
@@ -116,14 +116,7 @@ Results
 
 
 # @profile
-def fitness_results(pop, X, y_act, fitness_eval, hosts=None, curr_i=None):
-    pop_arr = np.asarray(pop)
-    if fitness_eval.__name__ == 'fitness_sharing':
-        results = fit.fitness_sharing(pop_arr, X, y_act, hosts, curr_i)
-    else:
-        all_y_pred = vm.y_pred(pop_arr, X) if hosts is None else vm.host_y_pred(pop_arr, hosts, X, None, 0)
-        results = [fitness_eval(pop[i], y_act, all_y_pred[i]) for i in range(len(all_y_pred))]
-    return results
+
 
 
 '''
@@ -136,10 +129,10 @@ Selection
 def tournament(data, env, pop, fitness_eval, hosts=None):
     X, y = data.curr_X, data.curr_y
     selected_i = np.random.choice(range(len(pop)), const.TOURNAMENT_SIZE, replace=False)
-    results = fitness_results([pop[i] for i in selected_i], X, y, fitness_eval)
+    results = fit.fitness_results([pop[i] for i in selected_i], X, y, fitness_eval)
     cutoff = int(const.TOURNAMENT_SIZE / 2)
 
-    ranked_results = get_ranked_index(results)
+    ranked_results = utils.get_ranked_index(results)
     winners_i = [selected_i[i] for i in ranked_results[cutoff:]]
     losers_i = [selected_i[i] for i in ranked_results[:cutoff]]
     parents = [pop[i] for i in winners_i]
@@ -151,7 +144,7 @@ def tournament(data, env, pop, fitness_eval, hosts=None):
     elif var_op == 1:
         progs = ops.two_prog_recombination([p.copy() for p in parents])
 
-    set_arr(losers_i, pop, progs)
+    utils.set_arr(losers_i, pop, progs)
 
 
 # Breeder model for selection
@@ -164,10 +157,10 @@ def breeder(data, env, pop, fitness_eval, hosts=None):
 
 
 def prog_breeder(data, env, pop, fitness_eval):
-    results = fitness_results(pop, data.curr_X, data.curr_y, fitness_eval, curr_i=data.curr_i)
+    results = fit.fitness_results(pop, data.curr_X, data.curr_y, fitness_eval, curr_i=data.curr_i)
     pop_size = len(pop)
     partition = pop_size - int(pop_size * env.breeder_gap)
-    ranked_index = get_ranked_index(results)
+    ranked_index = utils.get_ranked_index(results)
     bottom_i = ranked_index[:-partition]
     new_progs = []
 
@@ -178,7 +171,7 @@ def prog_breeder(data, env, pop, fitness_eval):
         elif var_op == 1:
             parents = [p.copy() for p in np.random.choice(pop, 2, replace=False)]
             new_progs += ops.two_prog_recombination(parents)
-    set_arr(bottom_i, pop, new_progs)
+    utils.set_arr(bottom_i, pop, new_progs)
 
 
 # @profile
@@ -186,18 +179,18 @@ def host_breeder(data, env, pop, fitness_eval, hosts):
     X, y = data.curr_X, data.curr_y
     last_X = [data.X_train[i] for i in data.last_X_train]
     partition = int(env.host_size - int(env.host_size * env.host_gap))
-    curr_hosts = get_nonzero(hosts)
+    curr_hosts = utils.get_nonzero(hosts)
 
     new_hosts = make_hosts(pop, curr_hosts, (env.host_size - partition), last_X, data.last_X_train)
-    set_arr(np.nonzero(hosts == np.array(None))[0], hosts, new_hosts)
-    results = fitness_results(pop, X, y, fitness_eval, hosts=hosts, curr_i=data.curr_i)
-    bottom_i = get_ranked_index(results)[:-partition]
-    set_arr(bottom_i, hosts, None)
+    utils.set_arr(np.nonzero(hosts == np.array(None))[0], hosts, new_hosts)
+    results = fit.fitness_results(pop, X, y, fitness_eval, hosts=hosts, curr_i=data.curr_i)
+    bottom_i = utils.get_ranked_index(results)[:-partition]
+    utils.set_arr(bottom_i, hosts, None)
 
-    curr_hosts = get_nonzero(hosts)
+    curr_hosts = utils.get_nonzero(hosts)
     clear_inactive_progs(pop, curr_hosts, env.max_teamsize)
     # Remove symbionts no longer indexed by any hosts as a consequence of host deletion
-    set_arr(find_unused_symbionts(pop, curr_hosts), pop, None)
+    utils.set_arr(find_unused_symbionts(pop, curr_hosts), pop, None)
 
     while pop[-1] is None:
         del pop[-1]
@@ -208,9 +201,10 @@ def clear_inactive_progs(pop, hosts, max_size):
     for i in range(len(pop)):
         if pop[i] is not None:
             prog_ids[i] = pop[i].prog_id
-    for i, host in enumerate(hosts):
+    for host in hosts:
         if host.progs_i.size == max_size:
             host.clear_inactive(prog_ids)
+        assert len(host.progs_i) > 0
 
 
 # @profile
@@ -328,11 +322,11 @@ def run_model(data, pop, env, hosts=None):
         # Run train/test fitness evaluations for data to be graphed
         if (i % env.graph_step == 0) or (i == (env.generations - 1)):
             graph_iter += 1
-            curr_hosts = get_nonzero(hosts) if hosts is not None else None
+            curr_hosts = utils.get_nonzero(hosts) if hosts is not None else None
 
             # Get top training fitness on training data
             if env.to_graph['top_trainfit_in_trainset'] or (env.train_fitness == env.test_fitness):
-                trainset_with_trainfit = fitness_results(pop, X, y, env.train_fitness, hosts=curr_hosts,
+                trainset_with_trainfit = fit.fitness_results(pop, X, y, env.train_fitness, hosts=curr_hosts,
                                                          curr_i=X_ind)
                 stats.update_trainfit_trainset(trainset_with_trainfit)
 
@@ -344,7 +338,7 @@ def run_model(data, pop, env, hosts=None):
                         data.act_valid_size = len(xvals)
                 else:
                     xvals, yvals = X, y
-                trainset_with_testfit = fitness_results(pop, xvals, yvals, env.test_fitness, hosts=curr_hosts)
+                trainset_with_testfit = fit.fitness_results(pop, xvals, yvals, env.test_fitness, hosts=curr_hosts)
                 stats.update_testfit_trainset(trainset_with_testfit)
             else:
                 trainset_with_testfit = trainset_with_trainfit
@@ -352,7 +346,7 @@ def run_model(data, pop, env, hosts=None):
             # Get testing fitness on testing data, using the host/program with max testing fitness on the training data
             p = pop if env.bid_gp else get_top_prog(sample_pop, trainset_with_testfit)
             h = get_top_prog(curr_hosts, trainset_with_testfit) if env.bid_gp else None
-            testset_with_testfit = fitness_results(p, data.X_test, data.y_test, env.test_fitness, hosts=h)
+            testset_with_testfit = fit.fitness_results(p, data.X_test, data.y_test, env.test_fitness, hosts=h)
             stats.update_testfit_testset(testset_with_testfit[0], i)
 
             # Get the percentages of each class correctly identified in the test set
@@ -361,69 +355,22 @@ def run_model(data, pop, env, hosts=None):
             stats.update_percentages(fit.class_percentages(p, data.X_test, data.y_test, data.classes, host=h))
             stats.update_prog_num(h)
 
+
         # Save the graph
         if not TESTING:
             if ((env.graph_save_step is not None) and (i % env.graph_save_step == 0)) or (i == env.generations - 1):
-                graph_params = stats.get_graph_params(env.to_graph)
-                graph.graph_fitness(graph_iter, data, env, *graph_params)
-                if env.to_graph['percentages']:
-                    graph.graph_percs(graph_iter, stats.percentages, env)
-                if env.to_graph['cumulative_detect_rate']:
-                    all_testset_with_testfit = fitness_results(pop, data.X_test, data.y_test, env.test_fitness,
-                                                               hosts=curr_hosts)
-                    cumulative = cumulative_detect_rate(data, pop, curr_hosts, all_testset_with_testfit, stats.trainset_with_testfit)
-                    graph.graph_cumulative(env, cumulative)
-                if env.to_graph['top_team_size']:
-                    graph.graph_teamsize(graph_iter, env, stats.num_progs_per_top_host)
-
+                graph.make_graphs(graph_iter, env, data, stats, pop, curr_hosts)
+            if ((env.json_save_step is not None) and (i % env.json_save_step == 0)) or (i == env.generations - 1):
+                stats.save_objs(pop, hosts, data, env)
+    print_info(env)
     print("Max fitness: {}, generation {}\nTime: {}".format(stats.max_fitness, stats.max_fitness_gen,
                                                             time.time() - start))
-    stats.save_objs(pop, hosts, data, env)
     return pop, hosts, stats
 
 
-def cumulative_detect_rate(data, pop, hosts, testset_with_testfit, trainset_with_testfit):
-    # Move this later - is calculated twice
-    if hosts is not None:
-        curr_hosts = get_nonzero(hosts)
-        y_pred = vm.host_y_pred(np.asarray(pop), curr_hosts, data.X_test, None, 0)
-    else:
-        y_pred = vm.y_pred(np.asarray(pop), data.X_test)
-    detect_rates = []
-    #ranked = get_ranked_index(testset_with_testfit)
-    ranked = get_ranked_index(trainset_with_testfit)
-    top = y_pred[ranked[-1]]
-
-    while len(ranked) > 0:
-        addition = y_pred[ranked.pop()]
-        top[addition == data.y_test] = addition[addition == data.y_test]
-        detect_rate = vm.avg_detect_rate(None, data.y_test, array('i', top))
-        detect_rates.append(detect_rate)
-        if detect_rate == 1:
-            break
-    detect_rates += [1.0] * (len(ranked))
-    return detect_rates
-
-
-def get_ranked_index(results):
-    return [x[0] for x in sorted(enumerate(results), key=lambda i: i[1])]
-
-
 def get_top_prog(pop, results):
-    ind = get_ranked_index(results)[-1]
+    ind = utils.get_ranked_index(results)[-1]
     return pop[ind:ind + 1]
-
-
-def set_arr(index, arr, vals):
-    for i in range(len(index)):
-        try:
-            arr[index[i]] = vals[i]
-        except (TypeError, IndexError):
-            arr[index[i]] = vals
-
-
-def get_nonzero(arr):
-    return arr[np.nonzero(arr)[0]]
 
 
 def print_info(env):

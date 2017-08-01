@@ -1,8 +1,24 @@
 import matplotlib, os, time, pdb
-import const
+import const, fitness as fit
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
+
+
+def make_graphs(graph_iter, env, data, stats, pop, hosts):
+    graph_params = stats.get_graph_params(env.to_graph)
+    graph_fitness(graph_iter, data, env, *graph_params)
+    if env.to_graph['percentages']:
+        graph_percs(graph_iter, stats.percentages, env)
+    if env.to_graph['cumulative_detect_rate']:
+        all_testset_with_testfit = fit.fitness_results(pop, data.X_test, data.y_test, env.test_fitness,
+                                                       hosts=hosts)
+        cumulative = fit.cumulative_detect_rate(data, pop, hosts, all_testset_with_testfit,
+                                            stats.trainset_with_testfit)
+        graph_cumulative(env, cumulative)
+    if env.to_graph['top_team_size']:
+        graph_teamsize(graph_iter, env, stats.num_progs_per_top_host)
+    plt.close('all')
 
 
 def graph_cumulative(env, cumulative):
@@ -100,9 +116,9 @@ def save_figure(filename, fig):
     plt.grid(which='both', axis='both')
     if filename.find(const.FILE_NAMES['graph_teamsize']) == -1:
         ax.yaxis.set_major_locator(MultipleLocator(.1))
+        ax.yaxis.set_minor_locator(AutoMinorLocator(5))
     else:
         ax.yaxis.set_major_locator(MultipleLocator(1))
-    ax.yaxis.set_minor_locator(AutoMinorLocator(5))
     ax.xaxis.set_minor_locator(AutoMinorLocator(5))
     plt.tick_params(which='both', width=1)
 
@@ -111,4 +127,3 @@ def save_figure(filename, fig):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     fig.set_size_inches(22, 11)
     fig.savefig(filepath, dpi=100)
-    plt.close('all')

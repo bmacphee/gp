@@ -6,6 +6,7 @@ from sklearn.model_selection import train_test_split
 from cythondir.vm import Prog, Host
 from array import array
 from copy import deepcopy
+from cythondir.vm import init
 
 jsonpickle_numpy.register_handlers()
 class Results:
@@ -196,9 +197,6 @@ def load_saved(filename):
     with open(filename, 'r') as f:
         objs = f.read()
     decoded = jp.decode(objs)
-
-    pop = [x.convert_to_prog() for x in decoded[0]]
-    hosts = np.asarray([x.convert_to_host() for x in decoded[1]])
     data = decoded[2]
     env = decoded[3]
     results = decoded[4]
@@ -209,7 +207,11 @@ def load_saved(filename):
     data.curr_y = array('i', data.curr_y)
     data.curr_i = array('i', data.curr_i)
     data.last_X_train = array('i', data.last_X_train)
-    #data.load_data(env)
+    data.load_data(env)
+    init(const.GEN_REGS, env.num_ipregs, env.output_dims, env.bid_gp, len(data.X_train))  # Important - before converting programs
+    pop = [x.convert_to_prog() for x in decoded[0]]
+    hosts = np.asarray([x.convert_to_host() for x in decoded[1]])
+
     return pop, hosts, data, env, results
 
 

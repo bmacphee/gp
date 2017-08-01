@@ -1,5 +1,5 @@
 import matplotlib, os, time, pdb
-import const, fitness as fit
+import const, fitness as fit, numpy as np
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
@@ -25,7 +25,7 @@ def graph_cumulative(env, cumulative):
     fig = plt.figure(figsize=(13, 13), dpi=80)
     ax = fig.add_subplot(111)
     num = len(cumulative)
-    ax.plot(range(1, num + 1), cumulative)
+    ax.plot(range(1, num + 1), cumulative, linewidth=2)
     plt.title('Cumulative Class-Wise Detection Rate (Training data: {})'.format(env.data_file))
     ax.set_xlim(1, num)
     ax.set_ylim(0, 1.02)
@@ -37,12 +37,13 @@ def graph_teamsize(last_x, env, team_sizes):
     gens = [i * env.graph_step for i in range(last_x)]
     fig = plt.figure(figsize=(13, 13), dpi=80)
     ax = fig.add_subplot(111)
-    ax.plot(gens, team_sizes, label='# progs')
+    ax.plot(gens, team_sizes, label='# progs', linewidth=2)
     plt.title('# Programs in Top Host\nMax Team Size: {}\nProgram Length: {}'.format(env.max_teamsize, const.PROG_LENGTH))
     if gens[-1] != 0:
         ax.set_xlim(xmax=gens[-1])
     ax.set_xlim(0)
     ax.set_ylim(0, env.max_teamsize)
+    ax.yaxis.set_label_position('right')
     filename = '{}{}'.format(env.file_prefix, const.FILE_NAMES[graph_teamsize.__name__])
     save_figure(filename, fig)
 
@@ -60,15 +61,15 @@ def graph_fitness(last_x, data, env, top_train_fit_on_train=None, train_means=No
     ]
 
     if top_train_fit_on_train:
-        ax.plot(gens, top_train_fit_on_train, label=labels[0])
+        ax.plot(gens, top_train_fit_on_train, label=labels[0], linewidth=2)
     if train_means:
-        ax.plot(gens, train_means, label=labels[1])
+        ax.plot(gens, train_means, label=labels[1], linewidth=2)
     if test_means:
-        ax.plot(gens, test_means, label=labels[2])
+        ax.plot(gens, test_means, label=labels[2], linewidth=2)
     if top_test_fit_on_train:
-        ax.plot(gens, top_test_fit_on_train, label=labels[4])
+        ax.plot(gens, top_test_fit_on_train, label=labels[4], linewidth=2)
     if top_train_prog_on_test:
-        ax.plot(gens, top_train_prog_on_test, label=labels[3])
+        ax.plot(gens, top_train_prog_on_test, label=labels[3], linewidth=2)
 
     subset_str = ', Subset Size: {}'.format(data.act_subset_size) if env.use_subset else ''
     valid_str = ''
@@ -100,7 +101,7 @@ def graph_percs(last_x, percentages, env):
     ax = fig.add_subplot(111)
     labels = sorted([perc for perc in percentages])
     for l in labels:
-        ax.plot(generations, percentages[l], label=l)
+        ax.plot(generations, percentages[l], label=l, linewidth=2)
     plt.title('% Classes Correct (Training data: {})'.format(env.data_file))
     if generations[-1] != 0:
         ax.set_xlim(xmax=generations[-1])
@@ -114,11 +115,15 @@ def graph_percs(last_x, percentages, env):
 def save_figure(filename, fig):
     ax = fig.axes[0]
     plt.grid(which='both', axis='both')
-    if filename.find(const.FILE_NAMES['graph_teamsize']) == -1:
+
+    if filename.find(const.FILE_NAMES['graph_cumulative']) != -1:
+        ax.xaxis.set_minor_locator(MultipleLocator(1))
+    if filename.find(const.FILE_NAMES['graph_teamsize']) != -1:
+        ax.yaxis.set_major_locator(MultipleLocator(1))
+    else:
         ax.yaxis.set_major_locator(MultipleLocator(.1))
         ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-    else:
-        ax.yaxis.set_major_locator(MultipleLocator(1))
+
     ax.xaxis.set_minor_locator(AutoMinorLocator(5))
     plt.tick_params(which='both', width=1)
 

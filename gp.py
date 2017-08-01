@@ -1,86 +1,9 @@
-import const, random, sys, time, utils, matplotlib, os, pdb
-import numpy as np
-import cythondir.vm as vm
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import fitness as fit
-import data_utils as dutil
-from matplotlib.ticker import MultipleLocator, AutoMinorLocator
+import const, random, sys, time, utils, config, numpy as np, pdb
+import graph, utils, cythondir.vm as vm, var_ops as ops, fitness as fit, data_utils as dutil
 from importlib import reload
 from array import array
 
-
 TESTING = 0
-data, env = None, None
-
-
-class Config:
-    def __init__(self):
-        self.ops = [0, 1, 2, 3]
-        self.pop_size = 100
-        self.generations = 1000000
-        self.graph_step = 10
-        self.graph_save_step = 10
-        self.data_files = ['data/iris.data', 'data/tic-tac-toe.data', 'data/ann-train.data', 'data/shuttle.trn',
-                           'data/MNIST/train-images.idx3-ubyte']
-        self.data_file = self.data_files[2]
-
-        self.standardize_method = const.StandardizeMethod.MEAN_VARIANCE
-        self.selection = const.Selection.BREEDER_MODEL
-        self.alpha = 1
-        self.use_subset = 1
-        self.subset_size = 200
-        self.use_validation = 1
-        self.validation_size = 200
-        self.test_size = 0.2
-        self.train_fitness_eval = None
-        self.test_fitness_eval = None
-        self.num_ipregs = None
-        self.train_fitness_eval = fit.fitness_sharing
-        self.test_fitness_eval = fit.avg_detect_rate
-        self.subset_sampling = dutil.even_data_subset
-
-
-class Data:
-    def __init__(self):
-        self.classes = None
-        self.data_by_classes = {}
-        self.X_train = None
-        self.X_test = None
-        self.y_train = None
-        self.y_test = None
-
-    def load_data(self, config):
-        if config.data_file is None:
-            return
-
-        data = dutil.load_data(config.data_file)
-        y = [ex[-1:len(ex)][0] for ex in data]
-        self.classes = dutil.get_classes(y)
-        y = np.array([self.classes[label] for label in y], dtype=np.int32)
-        X = dutil.preprocess([ex[:len(ex) - 1] for ex in data])
-
-        try:
-            test_data = dutil.load_data(const.TEST_DATA_FILES[config.data_file])
-            X_train = X
-            X_test = dutil.preprocess([ex[:len(ex) - 1] for ex in test_data])
-            self.y_train = y
-            self.y_test = np.array([self.classes[label] for label in [ex[-1:len(ex)][0] for ex in test_data]],
-                                   dtype=np.int32)
-        except KeyError:
-            X_train, X_test, self.y_train, self.y_test = dutil.split_data(X, y, config.test_size)
-
-        if config.standardize_method is not None:
-            X_train, X_test = dutil.standardize(X_train, X_test, env.standardize_method)
-            self.X_train, self.X_test = np.array(X_train, dtype=np.float64), np.array(X_test, dtype=np.float64)
-        config.num_ipregs = len(self.X_train[0])
-        config.output_dims = len(self.classes)
-        config.max_vals = [const.GEN_REGS, max(const.GEN_REGS, config.num_ipregs), max(config.ops), 2]
-
-    def set_classes(self, X, y):
-        for cl in self.classes.values():
-            self.data_by_classes[cl] = [X[i] for i in range(len(X)) if y[i] == cl]
-
 
 '''
 Generating initial programs
@@ -112,10 +35,79 @@ def gen_prog(pr):
 
 
 def gen_population(pop_num):
-    pop = [gen_prog(const.PROG_LENGTH) for n in range(0, pop_num)]
+    pop = [gen_prog(const.PROG_LENGTH) for _ in range(0, pop_num)]
     for p in pop:
-        p.effective_instrs = fit.find_introns(p)
+        vm.set_introns(p)
     return pop
+
+
+# @profile
+def gen_hosts(pop, data):
+    if not data.classes:
+        raise AttributeError('Data not loaded')
+
+    classes = list(data.classes.values())
+    num_hosts = int(env.host_size * env.host_gap)
+    hosts = [vm.Host() for _ in range(num_hosts)]
+
+    for i, host in enumerate(hosts):
+        pop_index = i * 2
+        progs = array('i', [pop_index, pop_index + 1])
+        host.set_progs(progs)
+        options = classes[:]
+        for prog_i in progs:
+            prog = pop[prog_i]
+            prog.class_label = np.random.choice(options)
+            options.remove(prog.class_label)
+
+    min_size = env.min_teamsize - env.start_teamsize
+    max_size = env.max_teamsize - env.start_teamsize
+    for host in hosts:
+        size = random.randint(min_size, max_size)
+        if size > 0:
+            options = [x for x in list(range(len(pop))) if x not in host.progs_i]
+            host.add_progs(array('i', np.random.choice(options, size, replace=False)))
+
+    init_hosts(np.array(hosts), data, pop)
+    hosts += [None] * (env.host_size - num_hosts)
+
+    return np.array(hosts)
+
+
+def gen_points(data, env, after_first_run=0):
+    if env.bid_gp:
+        data.last_X_train = data.curr_i[:const.NUM_SAVED_VALS]
+
+    if env.use_subset:
+        if env.point_fitness and after_first_run:
+            orig_ind = data.curr_i[:]
+
+            num_pts = len(data.curr_X)
+            partition = num_pts - int(num_pts * env.point_gap)
+            point_fit = vm.point_fitness(data.curr_y)
+            ranked_index = utils.get_ranked_index(point_fit)
+            bottom_i = ranked_index[:-partition]
+            max_val = len(data.X_train)
+
+            for i in bottom_i:
+                ind = np.random.randint(0, max_val)
+                while ind in orig_ind:
+                    ind = np.random.randint(0, max_val)
+                data.curr_i[i] = ind
+                data.curr_X[i] = data.X_train[ind]
+                data.curr_y[i] = data.y_train[ind]
+        else:
+            data.curr_X, data.curr_y, data.curr_i = env.subset_sampling(data, env.subset_size)
+            data.curr_i = env.subset_sampling(data, env.subset_size)[2]
+
+    elif not after_first_run:
+        data.curr_X, data.curr_y = data.X_train, data.y_train
+        data.curr_i = array('i', list(range(len(data.X_train))))
+
+
+def init_hosts(hosts, data, pop):
+    data.curr_X, data.curr_y, data.curr_i = dutil.even_data_subset(data, env.subset_size)
+    vm.host_y_pred(np.asarray(pop), hosts, data.curr_X, data.curr_i, 1)
 
 
 '''
@@ -123,85 +115,8 @@ Results
 '''
 
 
-#@profile
-def get_fitness_results(pop, X, y, fitness_eval, store_fitness=None):
-    if fitness_eval.__name__ == 'fitness_sharing':
-        results = fit.fitness_sharing(np.asarray(pop), X, y)
-    else:
-        all_y_pred = vm.y_pred(np.asarray(pop), X)
-        results = [fitness_eval(pop[i], y, all_y_pred[i]) for i in range(len(pop))]
-    return results
+# @profile
 
-
-'''
-Variation operators
-'''
-
-
-#@profile
-# Recombination - swap sections of 2 programs
-def recombination(progs):
-    progs = [progs[0].copy(), progs[1].copy()]
-    assert len(progs) == 2
-    prog0, prog1 = progs[0].prog, progs[1].prog
-    prog_len = len(prog0[0])
-    start_index = random.randint(0, prog_len - 2)
-    end_limit = prog_len - 1 if start_index is 0 else prog_len  # avoid swapping whole program
-    end_index = random.randint(start_index + 1, end_limit)
-
-    for col in range(len(prog0)):
-        prog1[col][start_index:end_index] = prog0[col][start_index:end_index]
-        prog0[col][start_index:end_index] = prog1[col][start_index:end_index]
-    return [progs[0], progs[1]]
-
-
-#@profile
-# Mutation - change 1 value in the program
-def mutation(progs, effective_mutations=False):
-    step_size = 1
-    min_lines, max_lines = 1, len(progs[0].prog[0])
-
-    # One prog input for mutation
-    progs = [progs[0].copy()]
-    children = []
-    for prog in progs:
-        # Test - effective mutations
-        if effective_mutations:
-            if prog.effective_instrs[0] == -1:
-                fit.find_introns(prog)
-            num_lines = random.randint(min_lines, min(max_lines, len(prog.effective_instrs)))
-            lines = np.random.choice(prog.effective_instrs, size=num_lines, replace=False)
-        else:
-            num_lines = random.randint(min_lines, max_lines)
-            lines = np.random.choice(list(range(max_lines)), size=num_lines, replace=False)
-        for index in lines:
-            col = random.randint(0, len(prog.prog) - 1)
-            orig_val = prog.prog[col][index]
-            # new_val = orig_val
-            if col == const.OP:
-                options = [x for x in env.ops if x != orig_val]
-                # new_val = np.random.choice(options)
-            #
-            # elif (col == const.TARGET) and effective_mutations:
-            #     options = set([prog.prog[const.TARGET][i] for i in prog.effective_instrs]).difference(set([orig_val]))
-            #     new_val = np.random.choice(options)
-
-            else:
-                # while new_val == orig_val:
-                #     if new_val == 0:
-                #         op = 0
-                #     elif (new_val == env.max_vals[col]):
-                #         op = 1
-                #     else:
-                #         op = random.randint(0, 1)
-                # new_val = (orig_val+step_size) if op is 0 else (orig_val-step_size)
-                # Use all vals or use 1-step vals?
-                options = [x for x in range(env.max_vals[col]) if x != orig_val]
-            new_val = np.random.choice(options)
-            prog.prog[col][index] = new_val
-        # check_fitness_after_variation(prog, lines)
-        children.append(prog)
-    return children
 
 
 '''
@@ -209,374 +124,286 @@ Selection
 '''
 
 
-#@profile
+# @profile
 # Steady state tournament for selection
-def tournament(X, y, pop, fitness_eval, var_op_probs=[0.5, 0.5]):
-    indivs = set()
-    while len(indivs) < const.TOURNAMENT_SIZE:
-        indivs.add(random.randint(0, len(pop) - 1))
-    selected_i = list(indivs)
-    results = get_fitness_results([pop[i] for i in selected_i], X, y, fitness_eval=fitness_eval,
-                                  store_fitness='trainset_trainfit')
+def tournament(data, env, pop, fitness_eval, hosts=None):
+    X, y = data.curr_X, data.curr_y
+    selected_i = np.random.choice(range(len(pop)), const.TOURNAMENT_SIZE, replace=False)
+    results = fit.fitness_results([pop[i] for i in selected_i], X, y, fitness_eval)
+    cutoff = int(const.TOURNAMENT_SIZE / 2)
 
-    winners_i = []
-    while len(winners_i) < 2:
-        max_i = results.index(max(results))
-        winners_i.append(selected_i[max_i])
-        results[max_i] = -float('inf')
-    losers_i = [i for i in selected_i if i not in winners_i]
+    ranked_results = utils.get_ranked_index(results)
+    winners_i = [selected_i[i] for i in ranked_results[cutoff:]]
+    losers_i = [selected_i[i] for i in ranked_results[:cutoff]]
     parents = [pop[i] for i in winners_i]
-    for i in sorted(losers_i, reverse=True):
-        del pop[i]
 
-    var_op = np.random.choice([0, 1], p=var_op_probs)
+    var_op = np.random.choice([0, 1], p=env.var_op_probs)
     if var_op == 0:
-        progs = mutation([parents[0]]) + mutation([parents[1]])
+        progs = ops.mutation([parents[0].copy()], env.ops, env.max_vals) + ops.mutation([parents[1].copy()], env.ops,
+                                                                                        env.max_vals)
     elif var_op == 1:
-        progs = recombination(parents)
+        progs = ops.two_prog_recombination([p.copy() for p in parents])
 
-    pop += progs
-    return pop
+    utils.set_arr(losers_i, pop, progs)
 
 
 # Breeder model for selection
-#@profile
-def breeder(X, y, pop, fitness_eval, gap=0.2, var_op_probs=[0.5, 0.5]):
-    env.pop_size = len(pop)
-    results = get_fitness_results(pop, X, y, fitness_eval=fitness_eval, store_fitness='trainset_trainfit')
-    ranked_index = get_ranked_index(results)
-    partition = len(pop) - int(len(pop) * gap)
-    top_i = ranked_index[-partition:]
-    new_pop = [pop[i] for i in top_i]
+# @profile
+def breeder(data, env, pop, fitness_eval, hosts=None):
+    if hosts is None:
+        prog_breeder(data, env, pop, fitness_eval)
+    else:
+        host_breeder(data, env, pop, fitness_eval, hosts)
 
-    while len(new_pop) < env.pop_size:
-        if len(new_pop) == (env.pop_size - 1):
-            var_op = 0
-        else:
-            var_op = np.random.choice([0, 1], p=var_op_probs)
 
+def prog_breeder(data, env, pop, fitness_eval):
+    results = fit.fitness_results(pop, data.curr_X, data.curr_y, fitness_eval, curr_i=data.curr_i)
+    pop_size = len(pop)
+    partition = pop_size - int(pop_size * env.breeder_gap)
+    ranked_index = utils.get_ranked_index(results)
+    bottom_i = ranked_index[:-partition]
+    new_progs = []
+
+    while len(new_progs) < len(bottom_i):
+        var_op = 0 if len(new_progs) == (pop_size - 1) else np.random.choice([0, 1], p=env.var_op_probs)
         if var_op == 0:
-            parents_i = [np.random.choice(top_i)]
-            progs = mutation([pop[parents_i[0]]])
+            new_progs += ops.mutation([np.random.choice(pop).copy()], env.ops, env.max_vals)
         elif var_op == 1:
-            parents_i = np.random.choice(top_i, 2, replace=False).tolist()
-            progs = recombination([pop[i] for i in parents_i])
-        new_pop += progs
-
-    return new_pop
+            parents = [p.copy() for p in np.random.choice(pop, 2, replace=False)]
+            new_progs += ops.two_prog_recombination(parents)
+    utils.set_arr(bottom_i, pop, new_progs)
 
 
-#@profile
-def run_model(X, y, pop, selection, generations, X_test=None, y_test=None):
+# @profile
+def host_breeder(data, env, pop, fitness_eval, hosts):
+    X, y = data.curr_X, data.curr_y
+    last_X = [data.X_train[i] for i in data.last_X_train]
+    partition = int(env.host_size - int(env.host_size * env.host_gap))
+    curr_hosts = utils.get_nonzero(hosts)
+
+    new_hosts = make_hosts(pop, curr_hosts, (env.host_size - partition), last_X, data.last_X_train)
+    utils.set_arr(np.nonzero(hosts == np.array(None))[0], hosts, new_hosts)
+    results = fit.fitness_results(pop, X, y, fitness_eval, hosts=hosts, curr_i=data.curr_i)
+    bottom_i = utils.get_ranked_index(results)[:-partition]
+    utils.set_arr(bottom_i, hosts, None)
+
+    curr_hosts = utils.get_nonzero(hosts)
+    clear_inactive_progs(pop, curr_hosts, env.max_teamsize)
+    # Remove symbionts no longer indexed by any hosts as a consequence of host deletion
+    utils.set_arr(find_unused_symbionts(pop, curr_hosts), pop, None)
+
+    while pop[-1] is None:
+        del pop[-1]
+
+
+def clear_inactive_progs(pop, hosts, max_size):
+    prog_ids = array('i', [-1]*len(pop))
+    for i in range(len(pop)):
+        if pop[i] is not None:
+            prog_ids[i] = pop[i].prog_id
+    for host in hosts:
+        if host.progs_i.size == max_size:
+            host.clear_inactive(prog_ids)
+        assert len(host.progs_i) > 0
+
+
+# @profile
+def find_unused_symbionts(pop, hosts):
+    all_referenced = set()
+    for host in hosts:
+        all_referenced.update(host.progs_i)
+    return [i for i in range(len(pop)) if i not in all_referenced and pop[i] is not None]
+
+
+# @profile
+def make_hosts(pop, hosts, num_new, X, X_i):
+    new_hosts = [h.copy() for h in np.random.choice(hosts, num_new)]
+    for host in new_hosts:
+        i = 1
+        curr_progs = host.progs_i.base.tolist()
+
+        # Remove symbionts
+        while (random.random() <= (env.prob_removal ** (i - 1))) and (len(curr_progs) > env.min_teamsize):
+            remove = np.random.choice(curr_progs)
+            curr_progs.remove(remove)
+            i += 1
+
+        # Add symbionts
+        i = 1
+        options = [x for x in range(len(pop)) if x not in curr_progs and pop[x] is not None]
+        while (random.random() <= (env.prob_add ** (i - 1))) and (len(curr_progs) < env.max_teamsize):
+            add = np.random.choice(options)
+            curr_progs.append(add)
+            i += 1
+        host.set_progs(array('i', curr_progs))
+    modify_symbionts(pop, new_hosts, X, X_i)
+
+    return new_hosts
+
+
+# @profile
+def modify_symbionts(pop, hosts, X, X_i):
+    unused_i = [i for i in range(len(pop)) if pop[i] is None]
+    for host in hosts:
+        changed = 0
+        progs = host.progs_i.base.tolist()
+        while not changed:
+            for i in host.progs_i:
+                if random.random() <= env.prob_modify:
+                    symb = pop[i]
+                    new = copy_change_bid(symb, pop, X, X_i)
+
+                    # Test to change action
+                    if random.random() <= env.prob_change_label:
+                        new.class_label = np.random.choice(
+                            [cl for cl in data.classes.values() if cl != new.class_label])
+
+                    if unused_i:
+                        new_index = unused_i.pop()
+                        pop[new_index] = new
+                    else:
+                        new_index = len(pop)
+                        pop.append(new)
+
+                    progs.remove(i)
+                    progs.append(new_index)
+                    changed = 1
+        host.set_progs(array('i', progs))
+
+
+# @profile
+def copy_change_bid(symb, pop, X, x_inds):
+    used_pop = np.asarray([pop[i] for i in range(len(pop)) if pop[i] is not None])
+    new = symb.copy()
+    duplicate = 1
+    temp_hosts = np.asarray([vm.Host()])
+    temp_hosts[0].set_progs(array('i', [0]))
+    test_pop = np.asarray([new])
+    X = np.asarray(X)
+
+    while duplicate:
+        ops.mutation([new], env.ops, env.max_vals)
+        ops.one_prog_recombination(new)
+        vm.host_y_pred(test_pop, temp_hosts, X, None, 1)
+        duplicate = new.is_duplicate(used_pop)
+
+    return new
+
+
+def run_model(data, pop, env, hosts=None):
     start = time.time()
-    filename_prefix = utils.filenum()
-    validation = (env.use_validation and env.use_subset)
-    max_fitness_gen, max_fitness, graph_iter = 0, 0, 0
-    # Components to graph
-    to_graph = {
-        'top_trainfit_in_trainset': 0,  # Top training fitness value in training set
-        'train_means': None,  # Mean of training fitness values in training set
-        'test_means': 1,  # Mean of testing fitness values in training set
-        'top_train_prog_on_test': 1,  # Testing fitness on test set of top training fitness prog in training set
-        'top_test_fit_on_train': 1,  # Testing fitness on train set of top training fitness prog in training set
-        'percentages': 1
-    }
-    to_graph['train_means'] = to_graph['top_trainfit_in_trainset']
+    if env.file_prefix is None:
+        env.file_prefix = utils.filenum()
+    graph_iter = 0
+    sample_pop = hosts if env.bid_gp else pop
+    stats = dutil.Results()
+    stats.init_percentages(data.classes)
 
-    if to_graph['percentages']:
-        percentages = {}
-        for cl in data.classes:
-            percentages[cl] = []
-
-    trainset_results_with_trainfit, trainset_results_with_testfit, testset_results_with_testfit = [], [], []
-    trainfit_trainset_means, testfit_trainset_means, top_trainfit_in_trainset, top_prog_testfit_on_testset, top_testfit_in_trainset = [], [], [], [], []
-    print_info()
-
-    if selection == const.Selection.STEADY_STATE_TOURN:
+    if env.selection == const.Selection.STEADY_STATE_TOURN:
         select = tournament
-    elif selection == const.Selection.BREEDER_MODEL:
+    elif env.selection == const.Selection.BREEDER_MODEL:
         select = breeder
     else:
-        raise ValueError('Invalid selection: {}'.format(selection))
+        raise ValueError('Invalid selection: {}'.format(env.selection))
+    print_info(env)
 
     for i in range(env.generations):
-        assert len(pop) == env.pop_size
-        print('.', end='')
-        sys.stdout.flush()
+        if not env.bid_gp:
+            assert len(pop) == env.pop_size  # Testing
+        if (i % 10 == 0):
+            print('.', end='')
+            sys.stdout.flush()
 
-        # Re-sample from validation and training sets if using subsets
-        if env.use_subset:
-            X, y = env.subset_sampling(data, env.subset_size)
-            # TODO: remove train examples from this? (use prev. valid data?)
-            if validation:
-                X_valid, y_valid = env.subset_sampling(data, env.validation_size)
-        pop = select(X, y, pop, env.train_fitness_eval)
+        # Run a generation of GP
+        gen_points(data, env, after_first_run=i)
+        X, y, X_ind = data.curr_X, data.curr_y, data.curr_i
+        select(data, env, pop, env.train_fitness, hosts=hosts)
 
         # Run train/test fitness evaluations for data to be graphed
         if (i % env.graph_step == 0) or (i == (env.generations - 1)):
             graph_iter += 1
-            if to_graph['top_trainfit_in_trainset'] or (env.train_fitness_eval == env.test_fitness_eval):
-                trainset_results_with_trainfit = get_fitness_results(pop, X, y, fitness_eval=env.train_fitness_eval)
-                top_trainfit_in_trainset.append(max(trainset_results_with_trainfit))
-                trainfit_trainset_means.append(np.mean(trainset_results_with_trainfit))
+            curr_hosts = utils.get_nonzero(hosts) if hosts is not None else None
 
-            if (env.train_fitness_eval != env.test_fitness_eval) and (to_graph['top_test_fit_on_train']
-                                                                      or to_graph['test_means']):
-                if validation:
-                    xvals, yvals = X_valid, y_valid
+            # Get top training fitness on training data
+            if env.to_graph['top_trainfit_in_trainset'] or (env.train_fitness == env.test_fitness):
+                trainset_with_trainfit = fit.fitness_results(pop, X, y, env.train_fitness, hosts=curr_hosts,
+                                                         curr_i=X_ind)
+                stats.update_trainfit_trainset(trainset_with_trainfit)
+
+            # Get top testing fitness on training data
+            if (env.train_fitness != env.test_fitness):
+                if env.use_validation:
+                    xvals, yvals, _ = env.subset_sampling(data, env.validation_size)
+                    if i == 0:
+                        data.act_valid_size = len(xvals)
                 else:
                     xvals, yvals = X, y
-                trainset_results_with_testfit = get_fitness_results(pop, xvals, yvals,
-                                                                    fitness_eval=env.test_fitness_eval)
-                top_testfit_in_trainset.append(max(trainset_results_with_testfit))
-                testfit_trainset_means.append(np.mean(trainset_results_with_testfit))
+                trainset_with_testfit = fit.fitness_results(pop, xvals, yvals, env.test_fitness, hosts=curr_hosts)
+                stats.update_testfit_trainset(trainset_with_testfit)
+            else:
+                trainset_with_testfit = trainset_with_trainfit
 
-            if (X_test is not None and y_test is not None) and to_graph['top_train_prog_on_test']:
-                if env.train_fitness_eval == env.test_fitness_eval:
-                    trainset_results_with_testfit = trainset_results_with_trainfit
-                testset_results_with_testfit = get_fitness_results([get_top_prog(pop, trainset_results_with_testfit)],
-                                                                   X_test, y_test, fitness_eval=env.test_fitness_eval)[
-                    0]
-                top_prog_testfit_on_testset.append(testset_results_with_testfit)
-                if testset_results_with_testfit > max_fitness:
-                    max_fitness = testset_results_with_testfit
-                    max_fitness_gen = i
-            if to_graph['percentages']:
-                cp = fit.class_percentages(get_top_prog(pop, trainset_results_with_testfit), X_test, y_test,
-                                           data.classes)
-                for p in cp:
-                    percentages[p].append(cp[p])
+            # Get testing fitness on testing data, using the host/program with max testing fitness on the training data
+            p = pop if env.bid_gp else get_top_prog(sample_pop, trainset_with_testfit)
+            h = get_top_prog(curr_hosts, trainset_with_testfit) if env.bid_gp else None
+            testset_with_testfit = fit.fitness_results(p, data.X_test, data.y_test, env.test_fitness, hosts=h)
+            stats.update_testfit_testset(testset_with_testfit[0], i)
 
-        if ((env.graph_save_step is not None) and (i % env.graph_save_step == 0)) or (i == env.generations - 1):
-            # Get graph parameters for graphing function - set to None to not display a graph component
-            graphparam = [top_trainfit_in_trainset, trainfit_trainset_means, testfit_trainset_means,
-                          top_prog_testfit_on_testset, top_testfit_in_trainset]
-            graph_inc = [to_graph['top_trainfit_in_trainset'], to_graph['train_means'], to_graph['test_means'],
-                         to_graph['top_train_prog_on_test'], to_graph['top_test_fit_on_train']]
-            graphparam = list(map(lambda x: graphparam[x] if graph_inc[x] else None, range(len(graphparam))))
-            graph(filename_prefix, env.graph_step, graph_iter, graphparam[0], graphparam[1], graphparam[2],
-                  graphparam[3],
-                  graphparam[4])
-
-            if to_graph['percentages']:
-                graph_percs(filename_prefix, env.graph_step, graph_iter, percentages)
-    plt.close('all')
-
-    # print_stats(pop, trainset_results_with_testfit, testset_results_with_testfit, top_prog_testfit_on_testset)
-    print("Max fitness: {} at generation {}".format(max_fitness, max_fitness_gen))
-    print("\nTime: {}".format(time.time() - start))
-    return pop, trainset_results_with_trainfit, trainset_results_with_testfit, testset_results_with_testfit
+            # Get the percentages of each class correctly identified in the test set
+            p = pop if env.bid_gp else p[0]
+            h = h[0] if env.bid_gp else None
+            stats.update_percentages(fit.class_percentages(p, data.X_test, data.y_test, data.classes, host=h))
+            stats.update_prog_num(h)
 
 
-def print_stats(pop, train_results_with_test_fit, test_results_with_test_fit, test_result_with_test_fit):
-    print('\nTop program (from train_fitness on training set):')
-    print('Test_fitness on test set: {} \nTest_fitness on train set: {}'.format(test_result_with_test_fit,
-                                                                                max(train_results_with_test_fit)))
-
-    top_prog = get_top_prog(pop, train_results_with_test_fit)
-    train_cl = fit.class_percentages(top_prog, data.X_train, data.y_train, data.classes)
-    test_cl = fit.class_percentages(top_prog, data.X_test, data.y_test, data.classes)
-    print('Test class percentages: {}\nTrain class percentages (all training): {}'.format(test_cl, train_cl))
-
-    test_fit_on_test = get_fitness_results(pop, data.X_test, data.y_test, fitness_eval=env.test_fitness_eval,
-                                           store_fitness='testset_testfit')
-    top_test_result = max(test_fit_on_test)
-    top_result_i = test_fit_on_test.index(top_test_result)
-    top_prog_from_test_on_train = get_fitness_results([pop[top_result_i]], data.X_train, data.y_train,
-                                                      env.test_fitness_eval, store_fitness='trainset_testfit')[0]
-
-    print('\nTop program (from test_fitness on test set):')
-    print('Top test_fitness in test set: {} \nTest_fitness on train set for top: {}'.format(top_test_result,
-                                                                                            top_prog_from_test_on_train))
-
-
-def graph(n, graph_step, last_x, top_train_fit_on_train=None, train_means=None, test_means=None,
-          top_train_prog_on_test=None, top_test_fit_on_train=None):
-    gens = [i*graph_step for i in range(last_x)]
-
-    fig = plt.figure(figsize=(13, 13), dpi=80)
-    ax = fig.add_subplot(111)
-    valid_train = 'Validation' if env.use_validation else 'Train'
-    labels = [
-        'Max Train Fitness in Train Set', 'Mean Train Fitness in Train Set', 'Mean Test Fitness in Train Set',
-        'Best {} Prog on Test Set (using test_fit)'.format(valid_train),
-        'Best Train Prog on {} Set (using test_fit)'.format(valid_train)
-    ]
-    if top_train_fit_on_train:
-        ax.plot(gens, top_train_fit_on_train, label=labels[0])
-    if train_means:
-        ax.plot(gens, train_means, label=labels[1])
-    if test_means:
-        ax.plot(gens, test_means, label=labels[2])
-    if top_test_fit_on_train:
-        ax.plot(gens, top_test_fit_on_train, label=labels[4])
-    if top_train_prog_on_test:
-        ax.plot(gens, top_train_prog_on_test, label=labels[3])
-
-    subset_str = ', Subset Size: {}'.format(env.subset_size) if env.use_subset else ''
-    valid_str = ''
-    if env.use_validation:
-        valid_str = ', Validation Size: {}'.format(env.validation_size)
-    op_str = ', '.join([const.OPS[x] for x in env.ops])
-    plt.title('Data: {}\nSelection: {}\nPop Size: {}, Generations: {}, Step Size: {}{}{}\nTraining Fitness: {}, '
-              'Test Fitness: {}\nOps: {}, Alpha: {}'.format(env.data_file, env.selection.value, env.pop_size,
-                                                            env.generations,
-                                                            env.graph_step, subset_str, valid_str,
-                                                            env.train_fitness_eval.__name__,
-                                                            env.test_fitness_eval.__name__, op_str, env.alpha))
-    plt.legend(loc=9, bbox_to_anchor=(0.5, -0.03), fontsize=8)
-    plt.grid(which='both', axis='both')
-    ax.set_xlim(xmin=0)
-    ax.set_ylim(ymax=1.02)
-    ax.set_ylim(ymin=0)
-    ax.yaxis.set_major_locator(MultipleLocator(.1))
-    ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-    ax.xaxis.set_minor_locator(AutoMinorLocator(5))
-    plt.tick_params(which='both', width=1)
-
-    if TESTING == 0:
-        filename = '{}_fitness.png'.format(n)
-        save_figure(filename, fig)
-
-
-def graph_percs(n, graph_step, last_x, percentages):
-    generations = [i*graph_step for i in range(last_x)]
-
-    fig = plt.figure(figsize=(13, 13), dpi=80)
-    ax = fig.add_subplot(111)
-    labels = sorted([perc for perc in percentages])
-    for l in labels:
-        ax.plot(generations, percentages[l], label=l)
-    plt.title('% Classes Correct (Training data: {})'.format(env.data_file))
-    plt.legend(bbox_to_anchor=(1.1, 1), fontsize=8)
-    plt.grid(which='both', axis='both')
-    ax.set_xlim(xmin=0)
-    ax.set_ylim(ymax=1.02)
-    ax.set_ylim(ymin=0)
-    ax.yaxis.set_major_locator(MultipleLocator(.1))
-    ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-    ax.xaxis.set_minor_locator(AutoMinorLocator(5))
-    plt.tick_params(which='both', width=1)
-
-    if TESTING == 0:
-        filename = '{}_classes.png'.format(n)
-        save_figure(filename, fig)
-
-
-def save_figure(filename, fig, print_alert=False):
-    date = time.strftime("%d_%m_%Y")
-    filepath = os.path.join(const.IMAGE_DIR, date, filename)
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    fig.savefig(filepath)
-    if print_alert:
-        print('Saved file: {}'.format(filepath))
-    plt.close('all')
-
-
-#@profile
-def get_average_fitness(env, num_trials, train_fitness_eval, test_fitness_eval=None):
-    if not test_fitness_eval:
-        test_fitness_eval = train_fitness_eval
-
-    max_test_fitness_on_train, mean_test_fitness_on_train, top_test_fitness_on_train, = [], [], []
-    top_test_fitness, top_train_prog_on_test = [], []
-
-    for i in range(num_trials):
-        # New train/test data split for each trial if train/test data isn't pre-split
-        try:
-            const.TEST_DATA_FILES[env.data_file]
-        except KeyError:
-            env.load_data()
-
-        print('Trial: {}'.format(i + 1))
-        pop = gen_population(env.pop_size)
-        pop, train_results_with_train_fit, train_results_with_test_fit, test_result_with_test_fit = run_model(
-            data.X_train, data.y_train, pop,
-            env.selection, env.generations,
-            X_test=data.X_test,
-            y_test=data.y_test)
-
-        max_test_fitness_on_train.append(max(train_results_with_test_fit))
-        mean_test_fitness_on_train.append(np.mean(train_results_with_test_fit))
-        top_train_prog_on_test.append(test_result_with_test_fit)
-
-        print('\nTop program (from train_fitness on training set):')
-        print('Test_fitness on test set: {} \nTest_fitness on train set: {}'.format(test_result_with_test_fit,
-                                                                                    max(train_results_with_test_fit)))
-
-        top_prog = get_top_prog(pop, train_results_with_test_fit)
-        train_cl = fit.class_percentages(top_prog, data.X_train, data.y_train, data.classes)
-        test_cl = fit.class_percentages(top_prog, data.X_test, data.y_test, data.classes)
-        print('Test class percentages: {}\nTrain class percentages (all training): {}'.format(test_cl, train_cl))
-
-        test_fit_on_test = get_fitness_results(pop, data.X_test, data.y_test, fitness_eval=test_fitness_eval,
-                                               store_fitness='testset_testfit')
-        top_test_result = max(test_fit_on_test)
-        top_result_i = test_fit_on_test.index(top_test_result)
-        top_prog_from_test_on_train = \
-        get_fitness_results([pop[top_result_i]], data.X_train, data.y_train, test_fitness_eval,
-                            store_fitness='trainset_testfit')[0]
-        top_test_fitness.append(top_test_result)
-        top_test_fitness_on_train.append(top_prog_from_test_on_train)
-
-        print('\nTop program (from test_fitness on test set):')
-        print('Top test_fitness in test set: {} \nTest_fitness on train set for top: {}'.format(top_test_result,
-                                                                                                top_prog_from_test_on_train))
-
-    avg_max, avg_mean, avg_test = np.mean(max_test_fitness_on_train), np.mean(mean_test_fitness_on_train), np.mean(
-        top_train_prog_on_test)
-    avg_top_test, avg_top_on_train = np.mean(top_test_fitness), np.mean(top_test_fitness_on_train)
-
-    print('\nTrials: {}\nAverage max test_fitness on train: {}\nAverage mean test_fitness on train: {}\n'
-          'Average test_fitness on test: {}\n'.format(num_trials, avg_max, avg_mean, avg_test))
-    print('Average top test_fitness on test: {}\n'
-          'Average top test_fitness on train, from top test_fitness on test: {}\n'.format(avg_top_test,
-                                                                                          avg_top_on_train))
-
-
-def get_ranked_index(results):
-    return [x[0] for x in sorted(enumerate(results), key=lambda i: i[1])]
+        # Save the graph
+        if not TESTING:
+            if ((env.graph_save_step is not None) and (i % env.graph_save_step == 0)) or (i == env.generations - 1):
+                graph.make_graphs(graph_iter, env, data, stats, pop, curr_hosts)
+            if ((env.json_save_step is not None) and (i % env.json_save_step == 0)) or (i == env.generations - 1):
+                stats.save_objs(pop, hosts, data, env)
+    print_info(env)
+    print("Max fitness: {}, generation {}\nTime: {}".format(stats.max_fitness, stats.max_fitness_gen,
+                                                            time.time() - start))
+    return pop, hosts, stats
 
 
 def get_top_prog(pop, results):
-    return pop[get_ranked_index(results)[-1]]
+    ind = utils.get_ranked_index(results)[-1]
+    return pop[ind:ind + 1]
 
 
-def print_info():
-    print('Population size: {}\nGenerations: {}\nData: {}\nSelection Replacement: {}\n'
-          'Alpha: {}\n'.format(env.pop_size, env.generations, env.data_file, env.selection.name, env.alpha))
+def print_info(env):
+    print('Population size: {}\nGenerations: {}\nData: {}\nSelection Replacement: {}\nAlpha: {}\nBid: {}\n'
+          'Point Fitness: {}\nFile num: {}\n'.format(env.pop_size, env.generations, env.data_file, env.selection.name,
+                                                     env.alpha, env.bid_gp, env.point_fitness, env.file_prefix))
 
 
-#@profile
-def main():
-    trials = 1
-    # get_average_fitness(env, trials, train_fitness_eval=env.train_fitness_eval, test_fitness_eval=env.test_fitness_eval)
-    pop = gen_population(env.pop_size)
-    run_model(data.X_train, data.y_train, pop,
-              env.selection, env.generations,
-              X_test=data.X_test,
-              y_test=data.y_test)
-    # pred = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]
-    # pred = array('i', pred)
-    # fit.fitness_sharing(pop, data.X_train, data.y_train)
-    #all_y_pred = [fit.predicted_classes(prog, data.X_train) for prog in pop]
-    # for prog in pop:
-    #     prog.prog = np.array(prog.prog)
-    # all_y_pred=vm.y_pred(np.asarray(pop), data.X_train)
-    # vm.fitness_sharing(np.asarray(pop), data.X_train, pred)
+def init_vm(env, data):
+    vm.init(const.GEN_REGS, env.num_ipregs, env.output_dims, env.bid_gp, len(data.X_train))
 
 
-def init_vm():
-    vm.init(const.GEN_REGS, env.num_ipregs, env.output_dims)
-
-
-env = Config()
-data = Data()
+# For testing with interpreter - move later
+env = config.Config()
+data = dutil.Data()
 if env.data_file:
     data.load_data(env)
-    init_vm()
+    init_vm(env, data)
+
+pop = gen_population(env.pop_size)
+hs = gen_hosts(pop, data)
+
+
+# @profile
+def main():
+    pop = gen_population(env.pop_size)
+    if not env.bid_gp:
+        hs = None
+    else:
+        hs = gen_hosts(pop, data)
+
+    run_model(data, pop, env, hosts=hs)
+
 
 if __name__ == '__main__':
     main()
-    #import cProfile
-    #cProfile.run('main()', sort='time')

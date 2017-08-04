@@ -2,6 +2,7 @@ import random, const
 import numpy as np
 import fitness as fit
 
+
 # TODO: does this need to be rows? currently columns
 def two_prog_recombination(progs):
     assert len(progs) == 2
@@ -12,17 +13,18 @@ def two_prog_recombination(progs):
     end_index = random.randint(start_index + 1, end_limit)
 
     for col in range(len(prog0)):
-        prog1[col,start_index:end_index] = prog0[col,start_index:end_index]
-        prog0[col,start_index:end_index] = prog1[col,start_index:end_index]
+        prog1[col, start_index:end_index] = prog0[col, start_index:end_index]
+        prog0[col, start_index:end_index] = prog1[col, start_index:end_index]
     progs[0].clear_effective_instrs()
     progs[1].clear_effective_instrs()
     return [progs[0], progs[1]]
+
 
 #@profile
 def one_prog_recombination(prog):
     prog_len = len(prog.prog[0])
     p = np.asmatrix(prog.prog).T
-    lines = np.random.choice(range(prog_len), 2, replace=False)
+    lines = random.sample(range(prog_len), 2)
 
     temp = p[lines[0]].copy()
     p[lines[0]] = p[lines[1]]
@@ -47,18 +49,17 @@ def mutation(progs, ops, max_vals, effective_mutations=False):
 
         else:
             num_lines = random.randint(min_lines, max_lines)
-            lines = np.random.choice(list(range(max_lines)), size=num_lines, replace=False)
+            lines = random.sample(range(max_lines), num_lines)
             cols = np.random.choice(len(prog.prog) - 1, size=num_lines)
         for i in range(num_lines):
             row, col = lines[i], cols[i]
-            col = random.randint(0, len(prog.prog) - 1)
-            orig_val = prog.prog[col,row]
+            orig_val = prog.prog[col, row]
             if col == const.OP:
                 options = [x for x in ops if x != orig_val]
             else:
                 options = [x for x in range(max_vals[col]) if x != orig_val]
-            new_val = np.random.choice(options)
-            prog.prog[col,row] = new_val
+            new_val = random.choice(options)
+            prog.prog[col, row] = new_val
         children.append(prog)
         prog.clear_effective_instrs()
     return children

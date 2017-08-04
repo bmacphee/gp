@@ -1,5 +1,6 @@
-import inspect, shelve, gp, cythondir.vm
+import inspect, shelve
 import numpy as np
+from cythondir.vm import Host
 from importlib import reload
 
 
@@ -26,11 +27,15 @@ def reset_filenum():
     with shelve.open('filegen') as c:
         c['num'] = 0
 
-
+import pdb
 def set_arr(index, arr, vals):
+
     for i in range(len(index)):
         try:
-            arr[index[i]] = vals[i]
+            val, ind = vals[i], index[i]
+            # if isinstance(val, Host):
+            #     val.index_num = ind
+            arr[ind] = val
         except (TypeError, IndexError):
             arr[index[i]] = vals
 

@@ -1,9 +1,36 @@
-import const, random, sys, time, utils, config, numpy as np, pdb
-import graph, utils, cythondir.vm as vm, var_ops as ops, fitness as fit, data_utils as dutil
+import random, sys, time, numpy as np, pdb
+import const, config, graph, utils, cythondir.vm as vm, var_ops as ops, fitness as fit, data_utils as dutil
 from importlib import reload
 from array import array
 
 TESTING = 0
+
+
+class System:
+    def __init__(self, pop, hosts, tangled_graphs):
+        self.pop = pop
+        self.hosts = hosts
+        self.root_teams = lambda: None
+        self.curr_hosts = lambda: None
+
+    def y_pred(self, X):
+        return vm.y_pred(np.asarray(self.pop), X)
+
+
+class BidSystem(System):
+    def __init__(self, pop, hosts, tangled_graphs):
+        System.__init__(self, pop, hosts, tangled_graphs)
+        self.curr_hosts = lambda: self.hosts[self.hosts != np.array(None)]
+
+    def y_pred(self, X):
+        return vm.host_y_pred(np.asarray(self.pop), self.hosts, X, None, 0)
+
+
+class GraphSystem(BidSystem):
+    def __init__(self, pop, hosts, tangled_graphs):
+        BidSystem.__init__(self, pop, hosts, tangled_graphs)
+        self.root_teams = lambda: [i for i, h in enumerate(self.hosts) if h is not None and h.num_refs == 0]
+
 
 '''
 Generating initial programs
@@ -41,7 +68,7 @@ def gen_population(pop_num):
     return pop
 
 
-# @profile
+###@profile
 def gen_hosts(pop, data):
     if not data.classes:
         raise AttributeError('Data not loaded')
@@ -51,13 +78,14 @@ def gen_hosts(pop, data):
     hosts = [vm.Host() for _ in range(num_hosts)]
 
     for i, host in enumerate(hosts):
+        host.index_num = i
         pop_index = i * 2
         progs = array('i', [pop_index, pop_index + 1])
         host.set_progs(progs)
         options = classes[:]
         for prog_i in progs:
             prog = pop[prog_i]
-            prog.class_label = np.random.choice(options)
+            prog.class_label = random.choice(options)
             options.remove(prog.class_label)
 
     min_size = env.min_teamsize - env.start_teamsize
@@ -70,7 +98,6 @@ def gen_hosts(pop, data):
 
     init_hosts(np.array(hosts), data, pop)
     hosts += [None] * (env.host_size - num_hosts)
-
     return np.array(hosts)
 
 
@@ -107,26 +134,22 @@ def gen_points(data, env, after_first_run=0):
 
 def init_hosts(hosts, data, pop):
     data.curr_X, data.curr_y, data.curr_i = dutil.even_data_subset(data, env.subset_size)
-    vm.host_y_pred(np.asarray(pop), hosts, data.curr_X, data.curr_i, 1)
+    vm.host_y_pred(np.asarray(pop), hosts, data.curr_X, data.curr_i, 0, 1, array('i', range(len(hosts))))
 
 
 '''
 Results
 '''
 
-
-# @profile
-
-
-
 '''
 Selection
 '''
 
 
-# @profile
+##@profile
 # Steady state tournament for selection
-def tournament(data, env, pop, fitness_eval, hosts=None):
+def tournament(data, env, system, fitness_eval):
+    pop = system.pop
     X, y = data.curr_X, data.curr_y
     selected_i = np.random.choice(range(len(pop)), const.TOURNAMENT_SIZE, replace=False)
     results = fit.fitness_results([pop[i] for i in selected_i], X, y, fitness_eval)
@@ -148,12 +171,12 @@ def tournament(data, env, pop, fitness_eval, hosts=None):
 
 
 # Breeder model for selection
-# @profile
-def breeder(data, env, pop, fitness_eval, hosts=None):
-    if hosts is None:
-        prog_breeder(data, env, pop, fitness_eval)
+##@profile
+def breeder(data, env, system, fitness_eval):
+    if system.hosts is None:
+        prog_breeder(data, env, system.pop, fitness_eval)
     else:
-        host_breeder(data, env, pop, fitness_eval, hosts)
+        host_breeder(data, env, system, fitness_eval)
 
 
 def prog_breeder(data, env, pop, fitness_eval):
@@ -174,50 +197,92 @@ def prog_breeder(data, env, pop, fitness_eval):
     utils.set_arr(bottom_i, pop, new_progs)
 
 
-# @profile
-def host_breeder(data, env, pop, fitness_eval, hosts):
+##@profile
+def host_breeder(data, env, system, fitness_eval):
     X, y = data.curr_X, data.curr_y
     last_X = [data.X_train[i] for i in data.last_X_train]
-    partition = int(env.host_size - int(env.host_size * env.host_gap))
-    curr_hosts = utils.get_nonzero(hosts)
 
-    new_hosts = make_hosts(pop, curr_hosts, (env.host_size - partition), last_X, data.last_X_train)
-    utils.set_arr(np.nonzero(hosts == np.array(None))[0], hosts, new_hosts)
-    results = fit.fitness_results(pop, X, y, fitness_eval, hosts=hosts, curr_i=data.curr_i)
+    none_vals = np.where(system.hosts == np.array(None))[0]
+    num_none_vals = len(none_vals)
+    new_hosts = make_hosts(system, num_none_vals, last_X, data.last_X_train)
+    for i in range(len(new_hosts)):
+        try:
+            new_hosts[i].index_num = none_vals[i]
+        except IndexError:
+            pdb.set_trace()
+
+    utils.set_arr(none_vals, system.hosts, new_hosts)
+
+    for i in range(len(system.hosts)):
+        assert system.hosts[i].index_num == i
+        for x in system.hosts[i].progs_i:
+            if system.pop[x].atomic_action == 0:
+                assert system.hosts[i].index_num != system.pop[x].class_label
+    # if isinstance(system, GraphSystem):
+    #     # Change this if change the sampling pop
+    #     system.root_teams() += [h.index_num for h in new_hosts]
+
+    results = fit.fitness_results(system.pop, X, y, fitness_eval, 0, hosts=system.hosts, curr_i=data.curr_i,
+                                  hosts_i=system.root_teams())
+
+    size = len(system.root_teams()) if isinstance(system, GraphSystem) else env.host_size
+    partition = int(size - int(size * env.host_gap))
     bottom_i = utils.get_ranked_index(results)[:-partition]
-    utils.set_arr(bottom_i, hosts, None)
+    to_set = [system.root_teams()[i] for i in bottom_i] if isinstance(system, GraphSystem) else bottom_i
+    utils.set_arr(to_set, system.hosts, None)
+    # for i in bottom_i:
+    #     system.root_teams().pop(i)
 
-    curr_hosts = utils.get_nonzero(hosts)
-    clear_inactive_progs(pop, curr_hosts, env.max_teamsize)
+    clear_inactive_progs(system, env.max_teamsize)
     # Remove symbionts no longer indexed by any hosts as a consequence of host deletion
-    utils.set_arr(find_unused_symbionts(pop, curr_hosts), pop, None)
+    clear_unused_symbionts(find_unused_symbionts(system), system)
 
-    while pop[-1] is None:
-        del pop[-1]
+    while system.pop[-1] is None:
+        del system.pop[-1]
 
 
-def clear_inactive_progs(pop, hosts, max_size):
-    prog_ids = array('i', [-1]*len(pop))
-    for i in range(len(pop)):
-        if pop[i] is not None:
-            prog_ids[i] = pop[i].prog_id
-    for host in hosts:
+##@profile
+def clear_unused_symbionts(unused, system):
+    if isinstance(system, GraphSystem):
+        for prog in [system.pop[i] for i in unused if system.pop[i].atomic_action == 0]:
+            host = system.hosts[prog.class_label]
+            if host is not None:
+                try:
+                    assert host.index_num not in system.root_teams()
+                    host.num_refs -= 1
+                except:
+                    pdb.set_trace()
+    utils.set_arr(unused, system.pop, None)
+
+
+##@profile
+def clear_inactive_progs(system, max_size):
+    prog_ids = array('i', [-1] * len(system.pop))
+    for i in range(len(system.pop)):
+        if system.pop[i] is not None:
+            prog_ids[i] = system.pop[i].prog_id
+
+    for host in system.curr_hosts():
         if host.progs_i.size == max_size:
             host.clear_inactive(prog_ids)
-        assert len(host.progs_i) > 0
+        try:
+            assert len(host.progs_i) > 0
+        except:
+            pdb.set_trace()
+    pass
 
 
-# @profile
-def find_unused_symbionts(pop, hosts):
+##@profile
+def find_unused_symbionts(system):
     all_referenced = set()
-    for host in hosts:
+    for host in system.curr_hosts():
         all_referenced.update(host.progs_i)
-    return [i for i in range(len(pop)) if i not in all_referenced and pop[i] is not None]
+    return [i for i in range(len(system.pop)) if i not in all_referenced and system.pop[i] is not None]
 
 
-# @profile
-def make_hosts(pop, hosts, num_new, X, X_i):
-    new_hosts = [h.copy() for h in np.random.choice(hosts, num_new)]
+##@profile
+def make_hosts(system, num_new, X, X_i):
+    new_hosts = [h.copy() for h in np.random.choice(system.curr_hosts(), num_new)]
     for host in new_hosts:
         i = 1
         curr_progs = host.progs_i.base.tolist()
@@ -230,40 +295,66 @@ def make_hosts(pop, hosts, num_new, X, X_i):
 
         # Add symbionts
         i = 1
-        options = [x for x in range(len(pop)) if x not in curr_progs and pop[x] is not None]
+        options = [x for x in range(len(system.pop)) if x not in curr_progs and system.pop[x] is not None]
         while (random.random() <= (env.prob_add ** (i - 1))) and (len(curr_progs) < env.max_teamsize):
-            add = np.random.choice(options)
-            curr_progs.append(add)
-            i += 1
+            if options:
+                add = np.random.choice(options)
+                curr_progs.append(add)
+            else:
+                break
         host.set_progs(array('i', curr_progs))
-    modify_symbionts(pop, new_hosts, X, X_i)
-
+    modify_symbionts(system, new_hosts, X)
     return new_hosts
 
 
-# @profile
-def modify_symbionts(pop, hosts, X, X_i):
-    unused_i = [i for i in range(len(pop)) if pop[i] is None]
-    for host in hosts:
+def prob_check(prob):
+    return random.random() <= prob
+
+
+##@profile
+def modify_symbionts(system, new_hosts, X):
+    unused_i = [i for i in range(len(system.pop)) if system.pop[i] is None]
+    for host in new_hosts:
         changed = 0
         progs = host.progs_i.base.tolist()
+
         while not changed:
             for i in host.progs_i:
-                if random.random() <= env.prob_modify:
-                    symb = pop[i]
-                    new = copy_change_bid(symb, pop, X, X_i)
-
+                if prob_check(env.prob_modify):
+                    symb = system.pop[i]
+                    new = copy_change_bid(symb, system, X)
                     # Test to change action
-                    if random.random() <= env.prob_change_label:
-                        new.class_label = np.random.choice(
-                            [cl for cl in data.classes.values() if cl != new.class_label])
+                    if prob_check(env.prob_change_action):
+                        new.atomic_action = 1
+                        # Check if host programs have atomic actions
+                        if isinstance(system, GraphSystem):
+                            atomic_exists = [system.pop[i].atomic_action for i in progs]
+                            if (atomic_exists.count(1) != 1) and prob_check(0.5):
+                                new.atomic_action = 0
+                        if new.atomic_action == 1:
+                            new.class_label = np.random.choice(
+                                [cl for cl in data.classes.values() if cl != new.class_label])
+                        else:
+                            new.atomic_action = 0
+                            # Note: this is only selecting from already present hosts
+                            new.class_label = np.random.choice(system.curr_hosts()).index_num
+                            # if system.hosts[new.class_label].num_refs == 0:
+                            #     system.root_teams().remove(new.class_label)
+
+                    if new.atomic_action == 0:
+                        try:
+                            system.hosts[new.class_label].num_refs += 1
+                            system.hosts[new.class_label].inc += 1
+                        except:
+                            pdb.set_trace()
 
                     if unused_i:
                         new_index = unused_i.pop()
-                        pop[new_index] = new
+                        system.pop[new_index] = new
                     else:
-                        new_index = len(pop)
-                        pop.append(new)
+                        new_index = len(system.pop)
+                        system.pop.append(new)
+
 
                     progs.remove(i)
                     progs.append(new_index)
@@ -271,33 +362,34 @@ def modify_symbionts(pop, hosts, X, X_i):
         host.set_progs(array('i', progs))
 
 
-# @profile
-def copy_change_bid(symb, pop, X, x_inds):
-    used_pop = np.asarray([pop[i] for i in range(len(pop)) if pop[i] is not None])
+#@profile
+def copy_change_bid(symb, system, X):
+    used_pop = np.asarray([system.pop[i] for i in range(len(system.pop)) if system.pop[i] is not None])
     new = symb.copy()
     duplicate = 1
+    new.atomic_action = 1  # Set to 1 for register checking - don't need graphs for this
     temp_hosts = np.asarray([vm.Host()])
     temp_hosts[0].set_progs(array('i', [0]))
     test_pop = np.asarray([new])
     X = np.asarray(X)
-
     while duplicate:
         ops.mutation([new], env.ops, env.max_vals)
         ops.one_prog_recombination(new)
-        vm.host_y_pred(test_pop, temp_hosts, X, None, 1)
+        vm.host_y_pred(test_pop, temp_hosts, X, None, 0, 1, array('i', [0]))  # Is this right?
         duplicate = new.is_duplicate(used_pop)
-
+    new.atomic_action = symb.atomic_action
     return new
 
 
-def run_model(data, pop, env, hosts=None):
+def run_model(data, system, env):
     start = time.time()
     if env.file_prefix is None:
         env.file_prefix = utils.filenum()
     graph_iter = 0
-    sample_pop = hosts if env.bid_gp else pop
+    sample_pop = system.hosts if env.bid_gp else system.pop
     stats = dutil.Results()
     stats.init_percentages(data.classes)
+    p, h = None, None
 
     if env.selection == const.Selection.STEADY_STATE_TOURN:
         select = tournament
@@ -309,25 +401,25 @@ def run_model(data, pop, env, hosts=None):
 
     for i in range(env.generations):
         if not env.bid_gp:
-            assert len(pop) == env.pop_size  # Testing
-        if (i % 10 == 0):
+            assert len(system.pop) == env.pop_size  # Testing
+        if (i % 1 == 0):
             print('.', end='')
             sys.stdout.flush()
 
         # Run a generation of GP
         gen_points(data, env, after_first_run=i)
         X, y, X_ind = data.curr_X, data.curr_y, data.curr_i
-        select(data, env, pop, env.train_fitness, hosts=hosts)
+        select(data, env, system, env.train_fitness)
 
         # Run train/test fitness evaluations for data to be graphed
         if (i % env.graph_step == 0) or (i == (env.generations - 1)):
+            print(len(system.root_teams()))
             graph_iter += 1
-            curr_hosts = utils.get_nonzero(hosts) if hosts is not None else None
-
             # Get top training fitness on training data
             if env.to_graph['top_trainfit_in_trainset'] or (env.train_fitness == env.test_fitness):
-                trainset_with_trainfit = fit.fitness_results(pop, X, y, env.train_fitness, hosts=curr_hosts,
-                                                         curr_i=X_ind)
+
+                trainset_with_trainfit = fit.fitness_results(system.pop, X, y, env.train_fitness, 0, hosts=system.hosts,
+                                                             curr_i=X_ind, hosts_i=system.root_teams())
                 stats.update_trainfit_trainset(trainset_with_trainfit)
 
             # Get top testing fitness on training data
@@ -338,34 +430,44 @@ def run_model(data, pop, env, hosts=None):
                         data.act_valid_size = len(xvals)
                 else:
                     xvals, yvals = X, y
-                trainset_with_testfit = fit.fitness_results(pop, xvals, yvals, env.test_fitness, hosts=curr_hosts)
+                trainset_with_testfit = fit.fitness_results(system.pop, xvals, yvals, env.test_fitness, 0,
+                                                            hosts=system.hosts, hosts_i=system.root_teams())
                 stats.update_testfit_trainset(trainset_with_testfit)
             else:
                 trainset_with_testfit = trainset_with_trainfit
 
             # Get testing fitness on testing data, using the host/program with max testing fitness on the training data
-            p = pop if env.bid_gp else get_top_prog(sample_pop, trainset_with_testfit)
-            h = get_top_prog(curr_hosts, trainset_with_testfit) if env.bid_gp else None
-            testset_with_testfit = fit.fitness_results(p, data.X_test, data.y_test, env.test_fitness, hosts=h)
+            p = system.pop if env.bid_gp else get_top_prog(sample_pop, trainset_with_testfit)
+            if env.tangled_graphs:
+                h = system.hosts
+            elif env.bid_gp:
+                h = get_top_prog(system.curr_hosts(), trainset_with_testfit)
+            testset_with_testfit = fit.fitness_results(p, data.X_test, data.y_test, env.test_fitness, 1, hosts=h,
+                                                       hosts_i=system.root_teams())
             stats.update_testfit_testset(testset_with_testfit[0], i)
 
             # Get the percentages of each class correctly identified in the test set
-            p = pop if env.bid_gp else p[0]
-            h = h[0] if env.bid_gp else None
-            stats.update_percentages(fit.class_percentages(p, data.X_test, data.y_test, data.classes, host=h))
-            stats.update_prog_num(h)
+            p = system.pop if env.bid_gp else p[0]
+            if env.tangled_graphs:
+                hosts_i = system.root_teams()
+            elif env.bid_gp:
+                hosts_i = np.where(system.hosts == h[0])[0]
 
+            stats.update_percentages(
+                fit.class_percentages(p, data.X_test, data.y_test, data.classes, 1, hosts=system.hosts,
+                                      hosts_i=hosts_i))
+            stats.update_prog_num(get_top_prog(system.curr_hosts(), trainset_with_testfit)[0])
 
         # Save the graph
         if not TESTING:
             if ((env.graph_save_step is not None) and (i % env.graph_save_step == 0)) or (i == env.generations - 1):
-                graph.make_graphs(graph_iter, env, data, stats, pop, curr_hosts)
+                graph.make_graphs(graph_iter, env, data, stats, system.pop, system.hosts, system.root_teams())
             if ((env.json_save_step is not None) and (i % env.json_save_step == 0)) or (i == env.generations - 1):
-                stats.save_objs(pop, hosts, data, env)
+                stats.save_objs(system.pop, system.hosts, data, env)
     print_info(env)
     print("Max fitness: {}, generation {}\nTime: {}".format(stats.max_fitness, stats.max_fitness_gen,
                                                             time.time() - start))
-    return pop, hosts, stats
+    return system.pop, system.hosts, stats
 
 
 def get_top_prog(pop, results):
@@ -375,12 +477,22 @@ def get_top_prog(pop, results):
 
 def print_info(env):
     print('Population size: {}\nGenerations: {}\nData: {}\nSelection Replacement: {}\nAlpha: {}\nBid: {}\n'
-          'Point Fitness: {}\nFile num: {}\n'.format(env.pop_size, env.generations, env.data_file, env.selection.name,
-                                                     env.alpha, env.bid_gp, env.point_fitness, env.file_prefix))
+          'Point Fitness: {}\nGraphs: {}\nFile num: {}\n'.format(env.pop_size, env.generations, env.data_file,
+                                                                 env.selection.name,
+                                                                 env.alpha, env.bid_gp, env.point_fitness,
+                                                                 env.tangled_graphs, env.file_prefix))
 
 
 def init_vm(env, data):
-    vm.init(const.GEN_REGS, env.num_ipregs, env.output_dims, env.bid_gp, len(data.X_train))
+    vm.init(const.GEN_REGS, env.num_ipregs, env.output_dims, env.bid_gp, env.tangled_graphs, len(data.X_train), len(data.X_test))
+
+
+def create_system(env, pop, hosts):
+    if env.bid_gp and env.tangled_graphs:
+        return GraphSystem(pop, hosts, 1)
+    elif env.bid_gp:
+        return BidSystem(pop, hosts, 0)
+    return System(pop, hosts, 0)
 
 
 # For testing with interpreter - move later
@@ -390,19 +502,18 @@ if env.data_file:
     data.load_data(env)
     init_vm(env, data)
 
-pop = gen_population(env.pop_size)
-hs = gen_hosts(pop, data)
+p = gen_population(env.pop_size)
+hs = gen_hosts(p, data) if env.bid_gp else None
+system = create_system(env, p, hs)
 
 
-# @profile
+##@profile
 def main():
-    pop = gen_population(env.pop_size)
-    if not env.bid_gp:
-        hs = None
-    else:
-        hs = gen_hosts(pop, data)
+    p = gen_population(env.pop_size)
+    hs = gen_hosts(p, data) if env.bid_gp else None
+    system = create_system(env, p, hs)
 
-    run_model(data, pop, env, hosts=hs)
+    run_model(data, system, env)
 
 
 if __name__ == '__main__':

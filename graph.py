@@ -1,20 +1,18 @@
 import matplotlib, os, time, pdb
 import const, fitness as fit, numpy as np
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
 
 
-def make_graphs(graph_iter, env, data, stats, pop, hosts):
+def make_graphs(graph_iter, env, data, stats, pop, hosts, hosts_i):
     graph_params = stats.get_graph_params(env.to_graph)
     graph_fitness(graph_iter, data, env, *graph_params)
     if env.to_graph['percentages']:
         graph_percs(graph_iter, stats.percentages, env)
     if env.to_graph['cumulative_detect_rate']:
-        all_testset_with_testfit = fit.fitness_results(pop, data.X_test, data.y_test, env.test_fitness,
-                                                       hosts=hosts)
-        cumulative = fit.cumulative_detect_rate(data, pop, hosts, all_testset_with_testfit,
-                                            stats.trainset_with_testfit)
+        cumulative = fit.cumulative_detect_rate(data, pop, hosts, stats.trainset_with_testfit, hosts_i=hosts_i)
         graph_cumulative(env, cumulative)
     if env.to_graph['top_team_size']:
         graph_teamsize(graph_iter, env, stats.num_progs_per_top_host)
@@ -38,18 +36,18 @@ def graph_teamsize(last_x, env, team_sizes):
     fig = plt.figure(figsize=(13, 13), dpi=80)
     ax = fig.add_subplot(111)
     ax.plot(gens, team_sizes, label='# progs', linewidth=2)
-    plt.title('# Programs in Top Host\nMax Team Size: {}\nProgram Length: {}'.format(env.max_teamsize, const.PROG_LENGTH))
+    plt.title(
+        '# Programs in Top Host\nMax Team Size: {}\nProgram Length: {}'.format(env.max_teamsize, const.PROG_LENGTH))
     if gens[-1] != 0:
         ax.set_xlim(xmax=gens[-1])
     ax.set_xlim(0)
     ax.set_ylim(0, env.max_teamsize)
-    ax.yaxis.set_label_position('right')
     filename = '{}{}'.format(env.file_prefix, const.FILE_NAMES[graph_teamsize.__name__])
     save_figure(filename, fig)
 
 
 def graph_fitness(last_x, data, env, top_train_fit_on_train=None, train_means=None, test_means=None,
-          top_train_prog_on_test=None, top_test_fit_on_train=None):
+                  top_train_prog_on_test=None, top_test_fit_on_train=None):
     gens = [i * env.graph_step for i in range(last_x)]
     fig = plt.figure(figsize=(13, 13), dpi=80)
     ax = fig.add_subplot(111)
@@ -77,12 +75,12 @@ def graph_fitness(last_x, data, env, top_train_fit_on_train=None, train_means=No
         valid_str = ', Validation Size: {}'.format(data.act_valid_size)
     op_str = ', '.join([const.OPS[x] for x in env.ops])
     plt.title(
-        'Data: {}\nSelection: {}, Bid GP: {}, Point Fitness: {}\nPop Size: {}, Generations: {}, Step Size: {}{}{}\n'
+        'Data: {}\nSelection: {}, Bid GP: {}, Point Fitness: {}, Graphs: {}\nPop Size: {}, Generations: {}, Step Size: {}{}{}\n'
         'Training Fitness: {}, Test Fitness: {}\nOps: [{}], Alpha: {}'.format(env.data_file, env.selection.value,
-                                                                              env.bid_gp,
-                                                                              env.point_fitness,
-                                                                              env.pop_size, env.generations,
-                                                                              env.graph_step, subset_str, valid_str,
+                                                                              env.bid_gp, env.point_fitness,
+                                                                              env.tangled_graphs, env.pop_size,
+                                                                              env.generations, env.graph_step,
+                                                                              subset_str, valid_str,
                                                                               env.train_fitness.__name__,
                                                                               env.test_fitness.__name__, op_str,
                                                                               env.alpha))
@@ -120,6 +118,7 @@ def save_figure(filename, fig):
         ax.xaxis.set_minor_locator(MultipleLocator(1))
     if filename.find(const.FILE_NAMES['graph_teamsize']) != -1:
         ax.yaxis.set_major_locator(MultipleLocator(1))
+        ax.yaxis.set_label_position('right')
     else:
         ax.yaxis.set_major_locator(MultipleLocator(.1))
         ax.yaxis.set_minor_locator(AutoMinorLocator(5))

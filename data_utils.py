@@ -1,6 +1,7 @@
 import const, matplotlib, gzip, time, os, pdb
 import numpy as np, jsonpickle as jp
 import jsonpickle.ext.numpy as jsonpickle_numpy
+
 matplotlib.use('Agg')
 from sklearn.model_selection import train_test_split
 from cythondir.vm import Prog, Host
@@ -9,6 +10,8 @@ from copy import deepcopy
 from cythondir.vm import init
 
 jsonpickle_numpy.register_handlers()
+
+
 class Results:
     def __init__(self):
         self.percentages = {}
@@ -147,7 +150,7 @@ class Data:
 
         config.num_ipregs = len(self.X_train[0])
         config.max_vals = array('i', [const.GEN_REGS, max(const.GEN_REGS, config.num_ipregs), -1, 2])
-        config.output_dims = 1  if config.bid_gp else len(self.classes)
+        config.output_dims = 1 if config.bid_gp else len(self.classes)
 
         if config.use_subset and (len(self.X_train) < config.subset_size):
             config.use_subset = 0
@@ -208,7 +211,8 @@ def load_saved(filename):
     data.curr_i = array('i', data.curr_i)
     data.last_X_train = array('i', data.last_X_train)
     data.load_data(env)
-    init(const.GEN_REGS, env.num_ipregs, env.output_dims, env.bid_gp, len(data.X_train))  # Important - before converting programs
+    # Important - before converting programs
+    init(const.GEN_REGS, env.num_ipregs, env.output_dims, env.bid_gp, env.tangled_graphs, len(data.X_train))
     pop = [x.convert_to_prog() for x in decoded[0]]
     hosts = np.asarray([x.convert_to_host() for x in decoded[1]])
 

@@ -1,6 +1,7 @@
 #!python
 #cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
 
+
 import const
 import numpy as np
 cimport numpy as np
@@ -10,16 +11,18 @@ cimport cython
 from libc.stdlib cimport malloc, free
 from libc.stdio cimport printf
 
+
 DTYPE_I = np.int
 DTYPE_D = np.float64
 ctypedef np.int_t DTYPE_I_t
 ctypedef np.float64_t DTYPE_D_t
 
+cpdef np.ndarray hosts
 cpdef double default_val = 1.0
 cpdef int num_genregs = 8
 cpdef int num_ipregs
 cpdef DTYPE_I_t output_dims
-cpdef int prog_len = const.PROG_LENGTH
+cpdef int prog_len
 cpdef int target_i = const.TARGET, source_i = const.SOURCE, mode_i = const.MODE, op_i = const.OP
 cpdef int bid_gp = 0
 cpdef int tangled_graphs = 0
@@ -27,6 +30,8 @@ cpdef int train_size = 0
 cpdef int test_size = 0
 cpdef int prog_id_num = 0
 cpdef int host_id_num = 0
+
+
 
 cpdef DTYPE_I_t[:,::1] curr_ypred_state = None
 
@@ -52,7 +57,6 @@ cdef extern from "string.h":
 def get_vals():
     return num_genregs, num_ipregs, output_dims, bid_gp, tangled_graphs
 
-
 def get_curr_ypred():
     return curr_ypred_state
 
@@ -68,15 +72,18 @@ cdef class Host:
         public int num_refs
         #public array.array progs_i
         public int num_progs
-        public array.array active_progs
+        array.array active_progs
+        #DTYPE_I_t* active_progs
+    #
+    # def __cinit__(self):
+    #     self.active_progs = <DTYPE_I_t*> malloc(sizeof(DTYPE_I_t)*10)
 
-        public int inc
+    # def __dealloc__(self):
+    #     free(self.active_progs)
 
     def __init__(self):
         self.clear_progs()
         self.num_refs = 0
-
-        self.inc =0
 
     cpdef set_progs(self, array.array progs):
         self.progs_i = progs
@@ -96,26 +103,28 @@ cdef class Host:
         self.progs_i = array.array('i')
         self.num_progs = 0
         self.active_progs = array.array('i')
+        # free(self.active_progs)
+        #self.active_progs = <DTYPE_I_t*> malloc(sizeof(DTYPE_I_t)*10)
 
     cpdef array.array get_progs(self):
         return self.progs_i.base
 
-    cpdef void clear_inactive(self, int[:] pop_ids):
+    cpdef void clear_inactive(self, Prog[:] pop):
         cdef:
             int i, active
             array.array new_progs = self.progs_i.base[:]
 
 
         for i in range(len(self.progs_i)):
-            if pop_ids[self.progs_i[i]] not in self.active_progs:
+            if pop[self.progs_i[i]].prog_id not in self.active_progs:
+            #if not in_array(self.active_progs, self.progs_i[i]):
                 new_progs.remove(self.progs_i[i])
+
         self.set_progs(new_progs)
 
     cpdef get_active(self):
+        #return [self.active_progs[i] for i in range(sizeof(self.active_progs)/sizeof(DTYPE_I_t))]
         return self.active_progs
-
-    cpdef set_active(self, array.array active):
-        self.active_progs = active
 
     cpdef copy(self):
         h = Host()
@@ -125,11 +134,12 @@ cdef class Host:
 
 cdef class Prog:
     cdef public DTYPE_I_t[:,::1] prog
-    cdef public int class_label
+
 
     cdef public DTYPE_D_t[:] first_50_regs
     cdef public int prog_id
-    cdef public int atomic_action
+    cdef int _atomic_action
+    cdef int _class_label
 
     cdef public change
     cdef public orig
@@ -151,20 +161,50 @@ cdef class Prog:
         if not self.output_registers:
             raise MemoryError()
 
-
     def __init__(self, list prog):
         global train_size, prog_id_num
+
         self.prog = np.asarray(prog, dtype=DTYPE_I)
-        self.effective_instrs = array.array('i')[:]
-        self.class_label = -1
+        self.effective_instrs = array.array('i')
+        self._class_label = -1
         self.ex_num = -1
         self.prog_id = prog_id_num
         prog_id_num += 1
-        self.atomic_action = 1
+        self._atomic_action = 1
 
         self.train_bid_vals = np.zeros((train_size, 2))
         self.test_bid_vals = np.zeros((test_size, 2))
         self.first_50_regs = np.asarray([-1]*50, dtype=DTYPE_D)
+
+    @property
+    def atomic_action(self):
+        return self._atomic_action
+
+    @atomic_action.setter
+    def atomic_action(self, value):
+        from systems import System   # Eventually move systems into Cython
+        if value == 0:
+            if System.hosts[self.class_label].num_refs is not None:
+                System.hosts[self.class_label].num_refs += 1
+        elif value == 1:
+            if System.hosts[self.class_label].num_refs is not None:
+                System.hosts[self.class_label].num_refs -= 1
+
+        self._atomic_action = value
+
+    @property
+    def class_label(self):
+        return self._class_label
+
+    @class_label.setter
+    def class_label(self, value):
+        from systems import System   # Eventually move systems into Cython
+        if self._atomic_action == 0:
+            if System.hosts[self.class_label].num_refs is not None:
+                System.hosts[self.class_label].num_refs -= 1
+            if System.hosts[value].num_refs is not None:
+                System.hosts[value].num_refs += 1
+        self._class_label = value
 
     def __dealloc__(self):
         free(self.output_registers)
@@ -174,9 +214,10 @@ cdef class Prog:
             list new_prog
         new_prog = [col[:] for col in self.prog]
         pr = Prog(new_prog)
+
         pr.effective_instrs = array.array('i')
-        pr.class_label = self.class_label
-        pr.atomic_action = self.atomic_action
+        pr.class_label = self._class_label
+        pr.atomic_action = self._atomic_action
         return pr
 
     cpdef void run_prog(self, DTYPE_D_t[:] ip):
@@ -235,12 +276,30 @@ cdef class Prog:
                 return 1
         return 0
 
+#
+# cdef class Vm():
+#     def __init__(self):
+#     cpdef double default_val = 1.0
+#     cpdef int num_genregs = 8
+#     cpdef int num_ipregs
+#     cpdef DTYPE_I_t output_dims
+#     cpdef int prog_len = const.PROG_LENGTH
+#     cpdef int target_i = const.TARGET, source_i = const.SOURCE, mode_i = const.MODE, op_i = const.OP
+#     cpdef int bid_gp = 0
+#     cpdef int tangled_graphs = 0
+#     cpdef int train_size = 0
+#     cpdef int test_size = 0
+#     cpdef int prog_id_num = 0
+#     cpdef int host_id_num = 0
 
-cpdef DTYPE_I_t[:,::1] y_pred(Prog[:] progs, DTYPE_D_t[:,:] X):
+cpdef np.ndarray[DTYPE_I_t, ndim=2] y_pred(Prog[:] progs, np.ndarray[DTYPE_D_t, ndim=2] X):
+# cpdef np.ndarray[DTYPE_I_t, ndim=2] y_pred(Prog[:] progs, DTYPE_D_t[:,:] X):
     cdef:
         DTYPE_I_t curr_y_pred, num_progs = len(progs), num_ex = len(X)
-        DTYPE_I_t[:,::1] all_y_pred = np.empty((num_progs, num_ex), dtype=DTYPE_I)
+        # DTYPE_I_t[:,::1] all_y_pred = np.empty((num_progs, num_ex), dtype=DTYPE_I)
+        np.ndarray[DTYPE_I_t, ndim=2] all_y_pred = np.empty((num_progs, num_ex), dtype=DTYPE_I)
         DTYPE_I_t[:] y_pred = np.empty(num_ex, dtype=DTYPE_I)
+        # np.ndarray[DTYPE_I_t, ndim=1] y_pred = np.empty(num_ex, dtype=DTYPE_I)
         Py_ssize_t i, j
         Prog prog
         DTYPE_D_t[:] curr_ex
@@ -250,22 +309,27 @@ cpdef DTYPE_I_t[:,::1] y_pred(Prog[:] progs, DTYPE_D_t[:,:] X):
         prog = progs[i]
         for j in range(num_ex):
             curr_ex = X[j]
-            if prog.class_label == -1:
+            if prog._class_label == -1:
                 prog.run_prog(curr_ex)
                 curr_y_pred = prog.max_ind()
             else:
-                curr_y_pred = prog.class_label
+                curr_y_pred = prog._class_label
             y_pred[j] = curr_y_pred
         all_y_pred[i] = y_pred
     return all_y_pred
 
 
-cpdef np.ndarray host_y_pred(Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, int[:] x_inds, int traintest, int change_regs, int[:] host_inds):
+# cpdef np.ndarray[DTYPE_I_t, ndim=2] host_y_pred(Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, int[:] x_inds,
+#                                                 int traintest, int change_regs, int[:] host_inds):
+cpdef np.ndarray[DTYPE_I_t, ndim=2] host_y_pred(Prog[:] pop, Host[:] hosts, np.ndarray[DTYPE_D_t, ndim=2] X, int[:] x_inds,
+                                                int traintest, int change_regs, int[:] host_inds):
     global tangled_graphs
     cdef:
-        DTYPE_I_t curr_y_pred, num_hosts = len(host_inds), num_ex = len(X), x_ind, set_max = 0
-        DTYPE_I_t[:,::1] all_y_pred = np.empty((num_hosts, num_ex), dtype=DTYPE_I)
-        DTYPE_I_t[:] y_pred = np.empty(num_hosts, dtype=DTYPE_I)
+        DTYPE_I_t curr_y_pred, num_hosts = len(host_inds), num_ex = len(X), x_ind, set_max = 0, curr_i = 0
+        # DTYPE_I_t[:,::1] all_y_pred = np.empty((num_hosts, num_ex), dtype=DTYPE_I)
+        np.ndarray[DTYPE_I_t, ndim=2] all_y_pred = np.empty((num_hosts, num_ex), dtype=DTYPE_I)
+        # DTYPE_I_t[:] y_pred = np.empty(num_hosts, dtype=DTYPE_I)
+        np.ndarray[DTYPE_I_t, ndim=1] y_pred = np.empty(num_hosts, dtype=DTYPE_I)
         #size_t i, j, max_ind
         Host host
         int[:] progs_i
@@ -273,8 +337,10 @@ cpdef np.ndarray host_y_pred(Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, int
         DTYPE_D_t[:] curr_ex
         DTYPE_D_t max_val, val
         int prog_i, i, j, k, l, max_ind = 0, host_ind, use_saved
-        array.array traversed
+        #array.array traversed
+        DTYPE_I_t* traversed
         cdef DTYPE_D_t[:, ::1] bid_vals
+
 
     if x_inds is None:
         use_saved = 0
@@ -284,10 +350,14 @@ cpdef np.ndarray host_y_pred(Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, int
     for i in range(num_ex):
         ##print('a0')
         curr_ex = X[i]
-        ##print('a1')
-        for j, k in enumerate(host_inds):
+        # ##print('a1')
+        # for j, k in enumerate(host_inds):
+        for j in range(num_hosts):
+            k = host_inds[j]
             set_max = 0
-            traversed = array.array('i')
+            # traversed = array.array('i')
+            traversed = <DTYPE_I_t*> malloc(sizeof(DTYPE_I_t)*10)
+            curr_i = 0
             #print('a2')
             host = hosts[k]
             #print('a3')
@@ -320,7 +390,8 @@ cpdef np.ndarray host_y_pred(Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, int
                 if change_regs and (i < 50):
                     prog.first_50_regs[i] = val
 
-                if (prog.atomic_action == 1 or prog.class_label not in traversed):
+                #if (prog._atomic_action == 1 or prog._class_label not in traversed):
+                if (prog._atomic_action == 1 or not in_array(traversed, prog._class_label)):
                     if set_max == 0:
                         max_val = val
                         max_ind = prog_i
@@ -334,29 +405,44 @@ cpdef np.ndarray host_y_pred(Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, int
 
             ##print('a10')
             if prog.prog_id not in host.active_progs:
+            #if not in_array(host.active_progs, prog.prog_id):
                 host.active_progs.insert(0, prog.prog_id)
+                #host.active_progs[sizeof(host.active_progs)/sizeof(DTYPE_I_t)] = prog.prog_id
 
-            if prog.atomic_action == 0:
+            if prog._atomic_action == 0:
                 ##print('a11')
-                traversed.insert(0, prog.class_label)
+                #traversed.insert(0, prog._class_label)
+                traversed[curr_i] = prog._class_label
+                curr_i += 1
             #print('Prog atomic_action: {} Class label: {}'.format(prog.atomic_action, prog.class_label))
-            curr_y_pred = get_y_pred(prog, pop, hosts, np.asarray([curr_ex]), x_inds, traintest)
+            # curr_y_pred = get_y_pred(prog, pop, hosts, np.asarray([curr_ex]), x_inds, traintest)
+            curr_y_pred = get_y_pred(prog, pop, hosts, X[i:i+1], x_inds, traintest)
             ##print('a12')
             y_pred[j] = curr_y_pred
             ##print('curr y pred: {}'.format(curr_y_pred))
             ##print('a13')
         all_y_pred[:, i] = y_pred
-    return all_y_pred.base
+    free(traversed)
+    return all_y_pred
+
+cdef int in_array(DTYPE_I_t* arr, DTYPE_I_t val):
+    cdef:
+        DTYPE_I_t size = sizeof(arr)/sizeof(DTYPE_I_t), i
+
+    for i in range(size):
+        if arr[i] == val:
+            return 1
+    return 0
 
 # cpdef np.ndarray host_y_pred(Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, int[:] x_inds, int change_regs, int[:] host_inds)
-cpdef DTYPE_I_t get_y_pred(Prog prog, Prog[:] pop, Host[:] hosts, DTYPE_D_t[:,::1] X, int[:] x_inds, int traintest) except -1:
-    if prog.atomic_action == 0:
+cdef DTYPE_I_t get_y_pred(Prog prog, Prog[:] pop, Host[:] hosts, np.ndarray[DTYPE_D_t, ndim=2] X, int[:] x_inds, int traintest):
+    if prog._atomic_action == 0:
         #print('Point to host: {}'.format(prog.class_label))
         #assert len(hosts) > prog.class_label
-        return host_y_pred(pop, hosts, X, x_inds, traintest, 0, array.array('i', [prog.class_label]))
+        return host_y_pred(pop, hosts, X, x_inds, traintest, 0, array.array('i', [prog._class_label]))
     else:
         #print('Returning: {}'.format(prog.class_label))
-        return prog.class_label
+        return prog._class_label
 
 # Needed to take prog argument previously (when storing) - fix this (may be called w/ a host)
 cpdef DTYPE_D_t avg_detect_rate(int[:] y, int[:] y_pred) except -1:
@@ -391,7 +477,8 @@ cpdef DTYPE_D_t avg_detect_rate(int[:] y, int[:] y_pred) except -1:
     return fitness
 
 
-cpdef array.array fitness_sharing(Prog[:] pop, DTYPE_D_t[:,::1] X, int[:] y, Host[:] hosts, int[:] x_inds, int[:] host_inds):
+# cpdef array.array fitness_sharing(Prog[:] pop, DTYPE_D_t[:,::1] X, int[:] y, Host[:] hosts, int[:] x_inds, int[:] host_inds):
+cpdef array.array fitness_sharing(Prog[:] pop, np.ndarray[DTYPE_D_t, ndim=2] X, int[:] y, Host[:] hosts, int[:] x_inds, int[:] host_inds):
     global curr_ypred_state
     cdef:
         size_t i, j, k
@@ -464,9 +551,9 @@ cpdef DTYPE_D_t[:] point_fitness(array.array[int] curr_y):
     return fitness
 
 
-cpdef void init(int genregs, int ipregs, int outdims, int bid, int graphs, int trainsize, int testsize):
-    global num_genregs, num_ipregs, output_dims, bid_gp, tangled_graphs, train_size, test_size
-
+cpdef void init(int progsize, int genregs, int ipregs, int outdims, int bid, int graphs, int trainsize, int testsize):
+    global num_genregs, num_ipregs, output_dims, bid_gp, tangled_graphs, train_size, test_size, prog_len
+    prog_len = progsize
     num_genregs = genregs
     num_ipregs = ipregs
     output_dims = outdims
@@ -474,6 +561,7 @@ cpdef void init(int genregs, int ipregs, int outdims, int bid, int graphs, int t
     tangled_graphs = graphs
     train_size = trainsize
     test_size = testsize
+
 
 cdef DTYPE_D_t* register_vals(DTYPE_I_t length, int[:] effective_instrs, DTYPE_I_t[::1] target_col, DTYPE_I_t[::1] source_col, DTYPE_I_t[::1] mode_col, DTYPE_I_t[::1] op_col, DTYPE_D_t[:] ip) nogil:
     global num_genregs, default_val

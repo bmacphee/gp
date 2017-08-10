@@ -1,4 +1,4 @@
-import const, matplotlib, gzip, time, os, pdb
+import const, matplotlib, gzip, time, os, pdb, systems, utils
 import numpy as np, jsonpickle as jp
 import jsonpickle.ext.numpy as jsonpickle_numpy
 
@@ -8,6 +8,8 @@ from cythondir.vm import Prog, Host
 from array import array
 from copy import deepcopy
 from cythondir.vm import init
+import fitness as fit
+from systems import System
 
 jsonpickle_numpy.register_handlers()
 
@@ -64,19 +66,18 @@ class Results:
         graph_param = list(map(lambda x: graph_param[x] if graph_inc[x] else None, range(len(graph_param))))
         return graph_param
 
-    def save_objs(self, pop, hosts, data, env):
+    def save_objs(self, system, data, env):
         file_name = '{}_saved_data'.format(env.file_prefix)
         date = time.strftime("%d_%m_%Y")
         filepath = os.path.join(const.JSON_DIR, date, file_name)
-        save_pop = [SaveableProg(p) for p in pop]
-        save_hosts = [SaveableHost(h) for h in hosts] if env.bid_gp else None
+        save_system = SaveableSystem(system)
         save_data = deepcopy(data)
         save_env = deepcopy(env)
         set_none = ['X_train', 'y_train', 'X_test', 'y_test']
         for attr in set_none:
             setattr(save_data, attr, None)
         # Need last_X_train, or curr_ypred_state?
-        convert_to_list = ['curr_X', 'curr_i', 'curr_y', 'last_X_train']
+        convert_to_list = ['curr_X', 'data_i', 'curr_y', 'last_X_train']
         for attr in convert_to_list:
             val = getattr(save_data, attr)
             if val is not None:
@@ -84,7 +85,7 @@ class Results:
 
         save_env.ops = save_env.ops.tolist()
 
-        objs = jp.encode([save_pop, save_hosts, save_data, save_env, self])
+        objs = jp.encode([save_system, save_data, save_env, self])
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         with open(filepath, 'w') as outfile:
             outfile.write(objs)
@@ -101,7 +102,7 @@ class Data:
         self.last_X_train = None
         self.curr_X = None
         self.curr_y = None
-        self.curr_i = None
+        self.data_i = None
         self.act_subset_size = None
         self.act_valid_size = None
 
@@ -168,6 +169,7 @@ class SaveableProg:
             self.is_none = 1
         else:
             self.prog = prog.prog.base.tolist()
+            self.atomic_action = prog.atomic_action
             self.class_label = prog.class_label
 
     def convert_to_prog(self):
@@ -176,6 +178,7 @@ class SaveableProg:
 
         new_prog = Prog(self.prog)
         new_prog.class_label = self.class_label
+        new_prog.atomic_action = self.atomic_action
         return new_prog
 
 
@@ -186,6 +189,7 @@ class SaveableHost:
             self.is_none = 1
         else:
             self.progs_i = host.progs_i.base.tolist()
+            self.index_num = host.index_num
 
     def convert_to_host(self):
         if self.is_none:
@@ -193,30 +197,56 @@ class SaveableHost:
 
         new_host = Host()
         new_host.set_progs(array('i', self.progs_i))
+        new_host.index_num = self.index_num
         return new_host
+
+
+class SaveableSystem:
+    def __init__(self, system):
+        self.hosts = [SaveableHost(s) for s in system.hosts] if system.hosts is not None else None
+        self.pop = [SaveableProg(p) for p in system.pop]
+        self.cl = system.__class__
+
+    def convert_to_system(self):
+        for i, host in enumerate(self.hosts):
+            self.hosts[i] = host.convert_to_host()
+        System.hosts = self.hosts
+        for i, p in enumerate(self.pop):
+            self.pop[i] = p.convert_to_prog()
+        system = self.cl(self.pop, np.asarray(self.hosts), self.cl == systems.GraphSystem)
+        return system
+
+
+def get_host_class_percs(system, data, results):
+    top = utils.get_ranked_index(results.trainset_with_testfit)
+    percs = []
+    for ind in reversed(top):
+        percs.append(fit.class_percentages(system, data.X_test, data.y_test, data.classes, 1, array('i', [system.root_hosts()[ind]]),
+                                           array('i', range(len(data.X_test)))))
+    return percs
 
 
 def load_saved(filename):
     with open(filename, 'r') as f:
         objs = f.read()
     decoded = jp.decode(objs)
-    data = decoded[2]
-    env = decoded[3]
-    results = decoded[4]
+    data = decoded[1]
+    env = decoded[2]
+    results = decoded[3]
 
     env.ops = array('i', env.ops)
     data.curr_X = np.asarray(data.curr_X)
     data.curr_y = array('i', data.curr_y)
     data.curr_y = array('i', data.curr_y)
-    data.curr_i = array('i', data.curr_i)
+    data.data_i = array('i', data.data_i)
     data.last_X_train = array('i', data.last_X_train)
     data.load_data(env)
     # Important - before converting programs
-    init(const.GEN_REGS, env.num_ipregs, env.output_dims, env.bid_gp, env.tangled_graphs, len(data.X_train))
-    pop = [x.convert_to_prog() for x in decoded[0]]
-    hosts = np.asarray([x.convert_to_host() for x in decoded[1]])
+    init(env.prog_length, const.GEN_REGS, env.num_ipregs, env.output_dims, env.bid_gp, env.tangled_graphs,
+         len(data.X_train), len(data.X_test))
+    system = decoded[0].convert_to_system()
 
-    return pop, hosts, data, env, results
+    return system, data, env, results
 
 
 # Initializing data

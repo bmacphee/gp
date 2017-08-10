@@ -4,10 +4,8 @@ TARGET = 0
 SOURCE = 1
 OP = 2
 MODE = 3
-PROG_LENGTH = 24
 TOURNAMENT_SIZE = 4
 GEN_REGS = 8
-NUM_SAVED_VALS = 50
 IMAGE_DIR = '/home/selene/Documents/results'
 JSON_DIR = '/home/selene/Documents/results/JSON'
 

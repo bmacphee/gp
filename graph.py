@@ -37,7 +37,7 @@ def graph_teamsize(last_x, env, team_sizes):
     ax = fig.add_subplot(111)
     ax.plot(gens, team_sizes, label='# progs', linewidth=2)
     plt.title(
-        '# Programs in Top Host\nMax Team Size: {}\nProgram Length: {}'.format(env.max_teamsize, const.PROG_LENGTH))
+        '# Programs in Top Host\nMax Team Size: {}\nProgram Length: {}'.format(env.max_teamsize, env.prog_length))
     if gens[-1] != 0:
         ax.set_xlim(xmax=gens[-1])
     ax.set_xlim(0)

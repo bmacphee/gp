@@ -3,7 +3,7 @@ import numpy as np
 import cythondir.vm as vm
 import data_utils as dutil
 import fitness as fit
-import gp, config, utils
+import gp, config, utils, systems
 from sklearn.metrics import accuracy_score
 from importlib import reload
 from array import array
@@ -73,14 +73,18 @@ def pop():
 
 @pytest.fixture
 def hosts():
-    return np.array([vm.Host(), vm.Host(), vm.Host(), vm.Host()])
-
+    h = np.array([vm.Host(), vm.Host(), vm.Host(), vm.Host()])
+    for i in range(len(h)):
+        h[i].index_num = i
+    return h
 
 
 @pytest.fixture
-def system(env, pop , hosts):
-    return gp.create_system(env, pop, hosts)
-
+def system(env, pop, hosts):
+    gp.gen_population = lambda *x: pop
+    gp.gen_hosts = lambda *x: hosts
+    syst = gp.create_system(env)
+    return syst
 
 def test_load_data():
     d = gp.load_data(TEST_DATA)
@@ -474,14 +478,14 @@ def test_point_fitness(env, data):
 def test_graph_host_y_pred(env):
     env.bid_gp, env.tangled_graphs, env.point_fitness = 1, 1, 0
     ip = np.array([[45.0, 0.0, 8.0]])
-    vm.init(8, 3, 1, 1, 1, 1)
+    vm.init(1, 8, 3, 1, 1, 1, 1, 1)
 
     progs = [[0], [0], [0], [1]], [[0], [0], [1], [0]], [[0], [0], [2], [0]]
     x_inds = array('i', [0])
     pop = []
     for i, p in enumerate(progs):
         prog = vm.Prog(p)
-        prog.class_label = i+1
+        prog.class_label = i + 1
         pop.append(prog)
 
     pop = np.array(pop)
@@ -491,63 +495,112 @@ def test_graph_host_y_pred(env):
     hosts[2].set_progs(array('i', [2]))
     host_i = array('i', range(len(hosts)))
 
-    y_pred = vm.host_y_pred(pop, hosts, ip, x_inds, 0, host_i)
+    y_pred = vm.host_y_pred(pop, hosts, ip, x_inds, 0, 0, host_i)
     for i in range(len(hosts)):
         assert y_pred[i] == pop[i].class_label
 
     pop[0].atomic_action = 0
     host_i = host_i[:1]
-    y_pred = vm.host_y_pred(pop, hosts, ip, x_inds, 0, host_i)
+    y_pred = vm.host_y_pred(pop, hosts, ip, x_inds, 0, 0, host_i)
     assert y_pred[0] == pop[1].class_label
 
     pop[1].atomic_action = 0
-    y_pred = vm.host_y_pred(pop, hosts, ip, x_inds, 0, host_i)
+    y_pred = vm.host_y_pred(pop, hosts, ip, x_inds, 0, 0, host_i)
     assert y_pred[0] == pop[2].class_label
 
     pop[0].atomic_action = 1
-    y_pred = vm.host_y_pred(pop, hosts, ip, x_inds, 0, host_i)
+    y_pred = vm.host_y_pred(pop, hosts, ip, x_inds, 0, 0, host_i)
     assert y_pred[0] == pop[0].class_label
 
 
-def test_root_teams(env, pop, hosts, data):
-    pop_len = len(pop)
-    env.bid_gp, env.tangled_graphs, env.point_fitness = 1, 1, 0
-    system = gp.create_system(gp.env, pop, np.array([hosts[0], None]))
-    assert isinstance(system, gp.GraphSystem)
-    assert system.root_teams() == [0]
-    for p in pop:
-        assert p.atomic_action == 1
-    for h in hosts:
-        h.set_progs(array('i', [0, 1, 2]))
+def mock_pop(*args):
+    return pop
 
-    new_host = hosts[0].copy()
+def mock_hosts(*args):
+    return hosts
+
+def test_root_hosts(env, system, data):
+    pop_len = len(system.pop)
+    env.bid_gp, env.tangled_graphs, env.point_fitness = 1, 1, 0
+    assert isinstance(system, systems.GraphSystem)
+
+    for p in system.pop:
+        assert p.atomic_action == 1
+    for h in system.hosts:
+        h.set_progs(array('i', [0, 1, 2]))
+    assert system.root_hosts() == [0, 1, 2, 3]
+
+    new_host = system.hosts[0].copy()
     gp.prob_check = lambda x: True
     gp.copy_change_bid = lambda *x: x[0].copy()
     gp.ops.one_prog_recombination = lambda *x: None
     gp.ops.mutation = lambda *x: None
+    gp.np.random.choice = lambda *x: 0
 
-    gp.modify_symbionts(system, [new_host], data.curr_X, data.curr_i)
-    assert len(system.pop) == pop_len*2
-    assert system.hosts[0].num_refs == 2
+    gp.modify_symbionts(system, [new_host], data.curr_X)
+    assert len(system.pop) == pop_len * 2
     actions = [p.atomic_action for p in system.pop]
     assert actions.count(1) == 4
     assert actions.count(0) == 2
-    assert len(system.root_teams()) == 0
-    utils.set_arr([1], system.hosts, new_host)
-    assert system.root_teams() == [1]
+    assert len(system.root_hosts()) == 3
+    assert system.hosts[0].num_refs == 2
+    assert system.root_hosts() == [1, 2, 3]
 
     unused = [i for i in range(len(system.pop)) if system.pop[i].atomic_action == 0]
     assert unused == [3, 4]
     gp.clear_unused_symbionts(unused, system)
     assert system.hosts[0].num_refs == 0
-    assert system.root_teams() == [0, 1]
+    assert system.root_hosts() == [0, 1, 2, 3]
 
 
-def test_num_refs():
-    pass
+def test_stored_vals(env, system, data):
+    host_inds = array('i', [0])
+    system.hosts[0].set_progs(array('i', [0, 1, 2]))
+    hosts = np.asarray([system.hosts[0]])
+    ip_train0 = np.array([[3.0, 2.0, 1.0]])
+    ip_train1 = np.array([[6.0, 5.0, 4.0]])
+    inds0 = array('i', range(len(ip_train0)))
+    inds1= array('i', range(len(ip_train0), len(ip_train0)+len(ip_train1)))
+    ip_test0 = np.array([[1.0, 2.0, 3.0]])
+    ip_test1 = np.array([[4.0, 5.0, 6.0]])
+    vm.init(1, 8, 3, 1, 1, 1, 1, 1)
+    inputs = [ip_train0, ip_train1, ip_test0, ip_test1]*2
+    inds = [inds0, inds1]*4
+    train_test_vals = [0, 0, 1, 1]*2
+    expected = [4, 7, 2, 5]*2
+    for i, input in enumerate(inputs):
+        result = vm.host_y_pred(np.asarray(system.pop), hosts, input, inds[i], train_test_vals[i], 0, host_inds)
+        if i < int(len(inputs)/2):
+            assert system.pop[0].get_regs()[0] == expected[i]
+        else:
+            assert system.pop[0].get_regs()[0] == expected[int(len(inputs)/2)-1]
+        assert result[0] == system.pop[0].class_label
 
 
+def test_num_refs(env, system, data):
+    for h in system.hosts:
+        assert h.num_refs == 0
+    for i, p in enumerate(system.pop):
+        assert p.atomic_action == 1
+        assert p.class_label == i+1
 
+    system.pop[0].atomic_action = 0
+    assert system.hosts[1].num_refs == 1
+    system.pop[0].atomic_action = 1
+    assert system.hosts[1].num_refs == 0
+
+    system.pop[0].class_label = 0
+    assert system.hosts[1].num_refs == 0
+    assert system.hosts[0].num_refs == 0
+    system.pop[0].atomic_action = 0
+    system.pop[0].class_label = 2
+    assert system.hosts[2].num_refs == 1
+    assert system.hosts[0].num_refs == 0
+
+    system.pop[1].atomic_action = 0
+    assert system.hosts[2].num_refs == 2
+    system.pop[0].atomic_action = 1
+    assert system.hosts[2].num_refs == 1
 
 
 def test_is_duplicate(env):
@@ -561,5 +614,3 @@ def test_is_duplicate(env):
     x_inds = np.asarray([0])
 
     vm.host_y_pred(pop, hosts, )
-
-

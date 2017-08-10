@@ -8,18 +8,29 @@ from array import array
 Fitness evaluation functions
 '''
 
-def fitness_results(pop, X, y_act, fitness_eval, train_test, hosts=None, curr_i=None, hosts_i=None):
-    pop_arr = np.asarray(pop)
-    if hosts is not None and hosts_i is None:
-        hosts_i = array('i', range(len(hosts)))
 
+# def fitness_results(pop, X, y_act, fitness_eval, train_test, hosts=None, data_i=None, hosts_i=None):
+#     pop_arr = np.asarray(pop)
+#     if hosts is not None and hosts_i is None:
+#         hosts_i = array('i', [i for i in range(len(hosts)) if hosts[i] is not None])
+#
+#     if fitness_eval.__name__ == 'fitness_sharing':
+#         results = fitness_sharing(pop_arr, X, y_act, hosts, data_i, hosts_i)
+#     else:
+#         if train_test == 1:
+#             data_i = array('i', range(len(X)))
+#         all_y_pred = vm.y_pred(pop_arr, X) if hosts is None else vm.host_y_pred(pop_arr, hosts, X, data_i, train_test,
+#                                                                                 0, array('i', hosts_i))
+#         results = [fitness_eval(y_act, all_y_pred[i]) for i in range(len(all_y_pred))]
+#     return results
+
+
+def fitness_results(traintest, system, X, y, fitness_eval, data_i=None, select_i=None):
     if fitness_eval.__name__ == 'fitness_sharing':
-        results = fitness_sharing(pop_arr, X, y_act, hosts, curr_i, hosts_i)
+        results = fitness_sharing(system, X, y, data_i, select_i)
     else:
-        if train_test == 1:
-            curr_i = array('i', range(len(X)))
-        all_y_pred = vm.y_pred(pop_arr, X) if hosts is None else vm.host_y_pred(pop_arr, hosts, X, curr_i, train_test, 0, array('i', hosts_i))
-        results = [fitness_eval(y_act, all_y_pred[i]) for i in range(len(all_y_pred))]
+        all_y_pred = system.y_pred(X, traintest=traintest, select_i=select_i, data_i=array('i',data_i))
+        results = [fitness_eval(y, all_y_pred[i]) for i in range(len(all_y_pred))]
     return results
 
 
@@ -28,21 +39,22 @@ def accuracy(prog, y, y_pred, hosts=None):
     return acc
 
 
-#@profile
+# @profile
 def avg_detect_rate(y_act, y_pred):
     y_act = array('i', y_act) if type(y_act) == list else y_act
     fitness = vm.avg_detect_rate(y_act, array('i', y_pred))
     return fitness
 
 
-#@profile
-def fitness_sharing(pop, X, y, hosts=None, curr_i=None, hosts_i=None):
-    if hosts_i is None and hosts is not None:
-        hosts_i = range(len(hosts))
-    fitness = vm.fitness_sharing(pop, X, y, hosts, curr_i, array('i', hosts_i))
+# @profile
+def fitness_sharing(system, X, y, data_i=None, select_i=None):
+    if select_i is None and system.hosts is not None:
+        select_i = range(len(system.hosts))
+    fitness = vm.fitness_sharing(system.pop, X, y, system.hosts, data_i, array('i', select_i))
     return fitness
 
-#@profile
+
+# @profile
 def predicted_classes(prog, X, fitness_sharing=0):
     y_pred = []
     for i in range(len(X)):
@@ -51,14 +63,9 @@ def predicted_classes(prog, X, fitness_sharing=0):
     return y_pred
 
 
-def class_percentages(prog, X, y, classes, train_test, hosts=None, hosts_i=None):
+def class_percentages(system, X, y, classes, train_test, select_i=None, data_i=None):
     percentages = {}
-    if hosts is not None:
-        curr_i = array('i', range(len(X)))
-        y_pred = vm.host_y_pred(np.asarray(prog), hosts, X, curr_i, train_test, 0, array('i', hosts_i))[0]
-    else:
-        y_pred = vm.y_pred(np.asarray([prog]), X)[0]
-
+    y_pred = system.y_pred(X, traintest=train_test, select_i=select_i, data_i=data_i)[0]
     for cl in classes:
         cl_results = [i for i in range(len(y)) if y[i] == classes[cl]]
         perc = sum([1 for i in cl_results if y[i] == y_pred[i]]) / len(cl_results)
@@ -70,14 +77,14 @@ def cumulative_detect_rate(data, pop, hosts, trainset_with_testfit, hosts_i=None
     # Move this later - is calculated twice
     if hosts is not None:
         if hosts_i is None:
-            hosts_i = array('i', range(len(hosts)))
             curr_hosts = utils.get_nonzero(hosts)
+            hosts_i = array('i', range(len(curr_hosts)))
         else:
             curr_hosts = hosts
-        curr_i = array('i', range(len(data.X_test)))
-        y_pred = vm.host_y_pred(np.asarray(pop), curr_hosts, data.X_test, curr_i, 1, 0, array('i', hosts_i))
+        data_i = array('i', range(len(data.X_test)))
+        y_pred = vm.host_y_pred(pop, curr_hosts, data.X_test, data_i, 1, 0, array('i', hosts_i))
     else:
-        y_pred = vm.y_pred(np.asarray(pop), data.X_test).base
+        y_pred = vm.y_pred(pop, data.X_test).base
     detect_rates = []
     ranked = utils.get_ranked_index(trainset_with_testfit)
     top = y_pred[ranked[-1]]

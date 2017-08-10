@@ -5,13 +5,15 @@ class Config:
     def __init__(self):
         self.ops = array('i', [0, 1, 2, 3, 4, 5, 6, 7])  # Ops [0:+, 1:-, 2:*, 3:/, 4:sin, 5:e, 6:ln, 7:conditional]
         self.pop_size = 100
-        self.generations = 10000
+        self.generations = 5
         self.graph_step = 20
         self.graph_save_step = 20
         self.json_save_step = 50000
+        self.prog_length = 24
+        self.num_saved_vals = 50
         self.data_files = ['data/iris.data', 'data/tic-tac-toe.data', 'data/ann-train.data', 'data/shuttle.trn',
                            'data/MNIST', 'data/gisette_train.data']
-        self.data_file = self.data_files[0]
+        self.data_file = self.data_files[1]
         self.standardize_method = const.StandardizeMethod.MEAN_VARIANCE
         self.selection = const.Selection.BREEDER_MODEL
         self.breeder_gap = 0.2
@@ -74,4 +76,6 @@ class Config:
             self.tangled_graphs = 0
         if self.pop_size < self.max_teamsize:
             self.max_teamsize = self.pop_size
+        if self.tangled_graphs:
+            self.bid_gp = 1
 

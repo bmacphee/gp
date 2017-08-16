@@ -1,6 +1,5 @@
-import inspect, shelve
+import shelve, pdb, random
 import numpy as np
-from cythondir.vm import Host
 from importlib import reload
 
 
@@ -27,9 +26,8 @@ def reset_filenum():
     with shelve.open('filegen') as c:
         c['num'] = 0
 
-import pdb
-def set_arr(index, arr, vals):
 
+def set_arr(index, arr, vals):
     for i in range(len(index)):
         try:
             val, ind = vals[i], index[i]
@@ -46,3 +44,22 @@ def get_nonzero(arr):
 
 def get_ranked_index(results):
     return [x[0] for x in sorted(enumerate(results), key=lambda i: i[1])]
+
+
+def top_host_i(stats, system):
+    top = get_ranked_index(stats.trainset_with_testfit)[-1]
+    ind = system.root_hosts()[top]
+    return ind
+
+
+def get_non_root(system):
+    curr_inds = [np.where(host == system.hosts)[0][0] for host in system.curr_hosts()]
+    return [i for i in curr_inds if i not in system.root_hosts()]
+
+
+def get_non_atomic(system):
+    return [i for i in range(len(system.pop)) if system.pop[i] is not None and system.pop[i].atomic_action == 0]
+
+
+def prob_check(prob):
+    return random.random() <= prob

@@ -1,4 +1,4 @@
-import const, pdb
+import pdb
 import numpy as np
 import utils, cythondir.vm as vm
 from sklearn.metrics import accuracy_score
@@ -9,27 +9,11 @@ Fitness evaluation functions
 '''
 
 
-# def fitness_results(pop, X, y_act, fitness_eval, train_test, hosts=None, data_i=None, hosts_i=None):
-#     pop_arr = np.asarray(pop)
-#     if hosts is not None and hosts_i is None:
-#         hosts_i = array('i', [i for i in range(len(hosts)) if hosts[i] is not None])
-#
-#     if fitness_eval.__name__ == 'fitness_sharing':
-#         results = fitness_sharing(pop_arr, X, y_act, hosts, data_i, hosts_i)
-#     else:
-#         if train_test == 1:
-#             data_i = array('i', range(len(X)))
-#         all_y_pred = vm.y_pred(pop_arr, X) if hosts is None else vm.host_y_pred(pop_arr, hosts, X, data_i, train_test,
-#                                                                                 0, array('i', hosts_i))
-#         results = [fitness_eval(y_act, all_y_pred[i]) for i in range(len(all_y_pred))]
-#     return results
-
-
-def fitness_results(traintest, system, X, y, fitness_eval, data_i=None, select_i=None):
+def fitness_results(traintest, system, X, y, fitness_eval, data_i=None, hosts_i=None):
     if fitness_eval.__name__ == 'fitness_sharing':
-        results = fitness_sharing(system, X, y, data_i, select_i)
+        results = fitness_sharing(system, X, y, data_i, hosts_i)
     else:
-        all_y_pred = system.y_pred(X, traintest=traintest, select_i=select_i, data_i=array('i',data_i))
+        all_y_pred = system.y_pred(X, traintest=traintest, hosts_i=hosts_i, data_i=data_i)
         results = [fitness_eval(y, all_y_pred[i]) for i in range(len(all_y_pred))]
     return results
 
@@ -47,10 +31,10 @@ def avg_detect_rate(y_act, y_pred):
 
 
 # @profile
-def fitness_sharing(system, X, y, data_i=None, select_i=None):
-    if select_i is None and system.hosts is not None:
-        select_i = range(len(system.hosts))
-    fitness = vm.fitness_sharing(system.pop, X, y, system.hosts, data_i, array('i', select_i))
+def fitness_sharing(system, X, y, data_i=None, hosts_i=None):
+    if hosts_i is None and system.hosts is not None:
+        hosts_i = range(len(system.hosts))
+    fitness = vm.fitness_sharing(system.pop, X, y, system.hosts, data_i, array('i', hosts_i))
     return fitness
 
 
@@ -63,9 +47,9 @@ def predicted_classes(prog, X, fitness_sharing=0):
     return y_pred
 
 
-def class_percentages(system, X, y, classes, train_test, select_i=None, data_i=None):
+def class_percentages(system, X, y, classes, train_test, hosts_i=None, data_i=None):
     percentages = {}
-    y_pred = system.y_pred(X, traintest=train_test, select_i=select_i, data_i=data_i)[0]
+    y_pred = system.y_pred(X, traintest=train_test, hosts_i=hosts_i, data_i=data_i)[0]
     for cl in classes:
         cl_results = [i for i in range(len(y)) if y[i] == classes[cl]]
         perc = sum([1 for i in cl_results if y[i] == y_pred[i]]) / len(cl_results)
@@ -78,7 +62,7 @@ def cumulative_detect_rate(data, pop, hosts, trainset_with_testfit, hosts_i=None
     if hosts is not None:
         if hosts_i is None:
             curr_hosts = utils.get_nonzero(hosts)
-            hosts_i = array('i', range(len(curr_hosts)))
+            hosts_i = array('i', range(len(curr_hosts)))  ## TODO: check this
         else:
             curr_hosts = hosts
         data_i = array('i', range(len(data.X_test)))

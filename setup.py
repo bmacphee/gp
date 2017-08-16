@@ -5,6 +5,6 @@ from Cython.Distutils import build_ext as build_pyx
 import numpy
 
 setup(
-    ext_modules = cythonize(["cythondir/*.pyx"]),
+    ext_modules=cythonize(["cythondir/*.pyx"]),
     include_dirs=[numpy.get_include()],
 )

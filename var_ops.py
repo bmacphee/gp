@@ -3,7 +3,7 @@ import numpy as np
 import fitness as fit
 
 
-# TODO: does this need to be rows? currently columns
+# TODO: does this need to be rows? currently columns (still works)
 def two_prog_recombination(progs):
     assert len(progs) == 2
     prog0, prog1 = progs[0].prog, progs[1].prog
@@ -20,7 +20,6 @@ def two_prog_recombination(progs):
     return [progs[0], progs[1]]
 
 
-#@profile
 def one_prog_recombination(prog):
     prog_len = len(prog.prog[0])
     p = np.asmatrix(prog.prog).T

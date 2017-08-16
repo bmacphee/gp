@@ -25,6 +25,7 @@ class Results:
         self.top_trainfit_in_trainset = []
         self.top_testfit_in_trainset = []
         self.num_progs_per_top_host = []
+        self.active_progs_per_top_host = []
         self.num_effective_instrs = []
         self.max_fitness = 0
         self.max_fitness_gen = 0
@@ -54,6 +55,7 @@ class Results:
     def update_prog_num(self, top_host):
         if top_host is not None:
             self.num_progs_per_top_host.append(top_host.progs_i.size)
+            self.active_progs_per_top_host.append(len(top_host.get_active()))
 
     def update_eff_instrs(self, progs):
         pass
@@ -82,7 +84,6 @@ class Results:
             val = getattr(save_data, attr)
             if val is not None:
                 setattr(save_data, attr, val.tolist())
-
         save_env.ops = save_env.ops.tolist()
 
         objs = jp.encode([save_system, save_data, save_env, self])
@@ -221,7 +222,8 @@ def get_host_class_percs(system, data, results):
     top = utils.get_ranked_index(results.trainset_with_testfit)
     percs = []
     for ind in reversed(top):
-        percs.append(fit.class_percentages(system, data.X_test, data.y_test, data.classes, 1, array('i', [system.root_hosts()[ind]]),
+        percs.append(fit.class_percentages(system, data.X_test, data.y_test, data.classes, 1,
+                                           array('i', [system.root_hosts()[ind]]),
                                            array('i', range(len(data.X_test)))))
     return percs
 
@@ -271,6 +273,8 @@ def load_mnist():
     return_vals = [X_train, y_train, X_test, y_test]
     for arr in return_vals:
         arr.flags.writeable = True
+    # Could use a generator?
+    # return_vals = [(x for x in X_train), (y for y in y_train), (x for x in X_test), (y for y in y_test)]
     return return_vals
 
 

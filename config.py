@@ -1,14 +1,15 @@
 import const, data_utils as dutil, fitness as fit
 from array import array
 
+
 class Config:
     def __init__(self):
         self.ops = array('i', [0, 1, 2, 3, 4, 5, 6, 7])  # Ops [0:+, 1:-, 2:*, 3:/, 4:sin, 5:e, 6:ln, 7:conditional]
         self.pop_size = 100
-        self.generations = 5
-        self.graph_step = 20
-        self.graph_save_step = 20
-        self.json_save_step = 50000
+        self.generations = 10000
+        self.graph_step = 200
+        self.graph_save_step = 200
+        self.json_save_step = None
         self.prog_length = 24
         self.num_saved_vals = 50
         self.data_files = ['data/iris.data', 'data/tic-tac-toe.data', 'data/ann-train.data', 'data/shuttle.trn',
@@ -20,8 +21,9 @@ class Config:
         self.alpha = 1
         self.use_subset = 1
         self.subset_size = 200
-        self.use_validation = self.use_subset
+        self.use_validation = 1
         self.validation_size = self.subset_size
+        # self.use_generator = 0
         self.test_size = 0.2
         self.num_ipregs = None
         self.output_dims = None
@@ -43,7 +45,7 @@ class Config:
         self.prob_change_action = 0.1
         self.prob_mutate = 1
         self.prob_swap = 1
-        self.max_teamsize = 10
+        self.max_teamsize = 15
         self.min_teamsize = 2
         self.start_teamsize = 2
 
@@ -76,6 +78,7 @@ class Config:
             self.tangled_graphs = 0
         if self.pop_size < self.max_teamsize:
             self.max_teamsize = self.pop_size
+        if self.min_teamsize > self.start_teamsize:
+            self.start_teamsize = self.min_teamsize
         if self.tangled_graphs:
             self.bid_gp = 1
-

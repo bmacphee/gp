@@ -5,7 +5,6 @@ from array import array
 
 TESTING = 0
 
-
 '''
 Generating initial programs
 '''
@@ -36,18 +35,22 @@ def gen_prog(pr):
 
 
 def gen_population(env):
-    pop = [gen_prog(env.prog_length) for _ in range(0, env.pop_size)]
-    for p in pop:
-        vm.set_introns(p)
     if env.bid_gp:
-        pop_num = env.max_teamsize * env.pop_size
+        pop_num = (env.pop_size - int(env.pop_size * env.host_gap)) * env.min_teamsize
+        total = env.max_teamsize * env.pop_size
     else:
         pop_num = env.pop_size
-    pop += [None] * (pop_num - len(pop))
+        total = env.pop_size
+    pop = [gen_prog(env.prog_length) for _ in range(0, pop_num)]
+    for p in pop:
+        vm.set_introns(p)
+
+    pop += [None] * (total - len(pop))
     return np.array(pop)
 
-#@profile
-def gen_hosts(pop, data):
+
+# @profile
+def gen_hosts(pop, data, env):
     if not data.classes:
         raise AttributeError('Data not loaded')
 
@@ -57,14 +60,18 @@ def gen_hosts(pop, data):
 
     for i, host in enumerate(hosts):
         host.index_num = i
-        pop_index = i * 2
-        progs = array('i', [pop_index, pop_index + 1])
+        pop_index = i * env.min_teamsize
+        progs = []
+        for j in range(pop_index, pop_index + env.min_teamsize):
+            progs.append(j)
+        progs = array('i', progs)
         host.set_progs(progs)
         options = classes[:]
         for prog_i in progs:
             prog = pop[prog_i]
-            prog.class_label = random.choice(options)
-            options.remove(prog.class_label)
+            label = random.choice(options)
+            prog.action = [prog.atomic_action, label]
+            options.remove(label)
 
     min_size = env.min_teamsize - env.start_teamsize
     max_size = env.max_teamsize - env.start_teamsize
@@ -94,13 +101,17 @@ def gen_points(data, env, after_first_run=0):
             bottom_i = ranked_index[:-partition]
             max_val = len(data.X_train)
 
+            new_inds = []
             for i in bottom_i:
                 ind = np.random.randint(0, max_val)
                 while ind in orig_ind:
                     ind = np.random.randint(0, max_val)
+                    new_inds.append(ind)
+
                 data.data_i[i] = ind
                 data.curr_X[i] = data.X_train[ind]
                 data.curr_y[i] = data.y_train[ind]
+
         else:
             data.curr_X, data.curr_y, data.data_i = env.subset_sampling(data, env.subset_size)
             data.data_i = env.subset_sampling(data, env.subset_size)[2]
@@ -110,21 +121,26 @@ def gen_points(data, env, after_first_run=0):
         data.data_i = array('i', list(range(len(data.X_train))))
 
 
+def create_system(env):
+    pop = gen_population(env)
+    hosts = gen_hosts(pop, data, env) if env.bid_gp else None
+    if env.bid_gp and env.tangled_graphs:
+        return systems.GraphSystem(pop, hosts)
+    elif env.bid_gp:
+        return systems.BidSystem(pop, hosts)
+    return systems.System(pop, hosts)
+
+
 def init_hosts(hosts, data, pop):
     data.curr_X, data.curr_y, data.data_i = dutil.even_data_subset(data, env.subset_size)
     vm.host_y_pred(pop, hosts, data.curr_X, data.data_i, 0, 1, array('i', np.nonzero(hosts)[0]))
 
 
-'''
-Results
-'''
-
-'''
-Selection
-'''
+def init_vm(env, data):
+    vm.init(env.prog_length, const.GEN_REGS, env.num_ipregs, env.output_dims, env.bid_gp, env.tangled_graphs,
+            len(data.X_train), len(data.X_test))
 
 
-#@profile
 # Steady state tournament for selection
 def tournament(data, env, system, fitness_eval):
     pop = system.pop
@@ -149,7 +165,6 @@ def tournament(data, env, system, fitness_eval):
 
 
 # Breeder model for selection
-#@profile
 def breeder(data, env, system, fitness_eval):
     if system.hosts is None:
         prog_breeder(data, env, system, fitness_eval)
@@ -158,7 +173,6 @@ def breeder(data, env, system, fitness_eval):
 
 
 def prog_breeder(data, env, system, fitness_eval):
-    # results = fit.fitness_results(0, system.pop, data.curr_X, data.curr_y, fitness_eval, data_i=data.data_i)
     results = system.trainset_fitness_results(data.curr_X, data.curr_y, env.train_fitness)
     pop_size = len(system.pop)
     partition = pop_size - int(pop_size * env.breeder_gap)
@@ -176,7 +190,7 @@ def prog_breeder(data, env, system, fitness_eval):
     utils.set_arr(bottom_i, system.pop, new_progs)
 
 
-#@profile
+# @profile
 def host_breeder(data, env, system, fitness_eval):
     X, y = data.curr_X, data.curr_y
     last_X = [data.X_train[i] for i in data.last_X_train]
@@ -199,23 +213,18 @@ def host_breeder(data, env, system, fitness_eval):
                 assert system.hosts[i].index_num != system.pop[x].class_label
 
     results = system.trainset_fitness_results(X, y, env.train_fitness, data_i=data.data_i)
-    # results = fit.fitness_results(0, system, X, y, fitness_eval, data_i=data.data_i, select_i=system.root_hosts())
-
     size = len(system.root_hosts()) if isinstance(system, systems.GraphSystem) else env.host_size
     partition = int(size - int(size * env.host_gap))
     bottom_i = utils.get_ranked_index(results)[:-partition]
     to_set = [system.root_hosts()[i] for i in bottom_i] if isinstance(system, systems.GraphSystem) else bottom_i
     utils.set_arr(to_set, system.hosts, None)
 
-    clear_inactive_progs(system, env.max_teamsize)
-    # Remove symbionts no longer indexed by any hosts as a consequence of host deletion
+    clear_inactive_progs(system, env.min_teamsize, env.max_teamsize)
     clear_unused_symbionts(find_unused_symbionts(system), system)
 
-    # while system.pop[-1] is None:
-    #     del system.pop[-1]
 
-
-#@profile
+# @profile
+# Remove symbionts no longer indexed by any hosts as a consequence of host deletion
 def clear_unused_symbionts(unused, system):
     if isinstance(system, systems.GraphSystem):
         for prog in [system.pop[i] for i in unused if system.pop[i].atomic_action == 0]:
@@ -223,14 +232,14 @@ def clear_unused_symbionts(unused, system):
             if host is not None:
                 try:
                     assert host.index_num not in system.root_hosts()
-                    prog.atomic_action = 1  # To decrement host num_refs
+                    prog.action = [1, prog.class_label]  # To decrement host num_refs
                 except:
                     pdb.set_trace()
     utils.set_arr(unused, system.pop, None)
 
 
-#@profile
-def clear_inactive_progs(system, max_size):
+# @profile
+def clear_inactive_progs(system, min_size, max_size):
     nonzero = np.nonzero(system.pop)[0]
     prog_ids = array('i', [-1] * len(nonzero))
     for i, j in enumerate(nonzero):
@@ -239,16 +248,11 @@ def clear_inactive_progs(system, max_size):
 
     for host in system.curr_hosts():
         if host.progs_i.size == max_size:
-            orig = host.progs_i.base
-            host.clear_inactive(system.pop)
-        try:
-            assert len(host.progs_i) > 0
-        except:
-            pdb.set_trace()
-    pass
+            host.clear_inactive(system.pop, min_size)
+        assert len(host.progs_i) > 0
 
 
-#@profile
+# @profile
 def find_unused_symbionts(system):
     all_referenced = set()
     for host in system.curr_hosts():
@@ -256,7 +260,7 @@ def find_unused_symbionts(system):
     return [i for i in range(len(system.pop)) if i not in all_referenced and system.pop[i] is not None]
 
 
-#@profile
+# @profile
 def make_hosts(system, num_new, X):
     new_hosts = [h.copy() for h in np.random.choice(system.curr_hosts(), num_new)]
     for host in new_hosts:
@@ -283,11 +287,7 @@ def make_hosts(system, num_new, X):
     return new_hosts
 
 
-def prob_check(prob):
-    return random.random() <= prob
-
-
-#@profile
+# @profile
 def modify_symbionts(system, new_hosts, X):
     unused_i = [i for i in range(len(system.pop)) if system.pop[i] is None]
     for host in new_hosts:
@@ -296,49 +296,45 @@ def modify_symbionts(system, new_hosts, X):
 
         while not changed:
             for i in host.progs_i:
-                if prob_check(env.prob_modify):
+                if utils.prob_check(env.prob_modify):
                     symb = system.pop[i]
                     new = copy_change_bid(symb, system, X)
                     # Test to change action
-                    if prob_check(env.prob_change_action):
+                    atomic_action = 1
+                    if utils.prob_check(env.prob_change_action):
                         # Check if host programs have atomic actions
                         if isinstance(system, systems.GraphSystem):
-                            atomic_action = 1
                             atomic_exists = [system.pop[i].atomic_action for i in progs]
-                            if (atomic_exists.count(1) > 1) and prob_check(0.5):
+                            if (atomic_exists.count(1) > 1) and utils.prob_check(0.5):
                                 atomic_action = 0
                         try:
                             if atomic_action == 1:
-                                new_label= np.random.choice(
+                                new_label = np.random.choice(
                                     [cl for cl in data.classes.values() if cl != new.class_label])
                             else:
                                 # Note: this is only selecting from already present hosts
                                 new_label = np.random.choice([h.index_num for h in system.curr_hosts()])
-
-                            new.atomic_action = atomic_action
-                            new.class_label = new_label
-
+                            new.action = [atomic_action, new_label]
                         except:
                             pdb.set_trace()
-                    # if unused_i:
+
                     new_index = unused_i.pop()
                     system.pop[new_index] = new
-                    # else:
-                    #     new_index = len(system.pop)
-                    #     system.pop.append(new)
-
                     progs.remove(i)
                     progs.append(new_index)
                     changed = 1
         host.set_progs(array('i', progs))
 
 
-#@profile
+# @profile
 def copy_change_bid(symb, system, X):
     used_pop = np.asarray([system.pop[i] for i in range(len(system.pop)) if system.pop[i] is not None])
-    new = symb.copy()
+    try:
+        new = symb.copy()
+    except:
+        pdb.set_trace()
     duplicate = 1
-    new.atomic_action = 1  # Set to 1 for register checking - don't need graphs for this
+    new.action = [1, new.class_label]  # Set to 1 for register checking - don't need graphs for this
     temp_hosts = np.asarray([vm.Host()])
     temp_hosts[0].set_progs(array('i', [0]))
     test_pop = np.asarray([new])
@@ -348,7 +344,7 @@ def copy_change_bid(symb, system, X):
         ops.one_prog_recombination(new)
         vm.host_y_pred(test_pop, temp_hosts, X, None, 0, 1, array('i', [0]))  # Is this right?
         duplicate = new.is_duplicate(used_pop)
-    new.atomic_action = symb.atomic_action
+    new.action = [symb.atomic_action, new.class_label]
     return new
 
 
@@ -385,7 +381,6 @@ def run_model(data, system, env):
             graph_iter += 1
             # Get top training fitness on training data
             if env.to_graph['top_trainfit_in_trainset'] or (env.train_fitness == env.test_fitness):
-
                 trainset_with_trainfit = system.trainset_fitness_results(X, y, env.train_fitness, data_i=X_ind)
                 stats.update_trainfit_trainset(trainset_with_trainfit)
 
@@ -412,18 +407,18 @@ def run_model(data, system, env):
                 top = system.root_hosts()[top]
                 stats.update_prog_num(get_top_prog(system.curr_hosts(), trainset_with_testfit)[0])
             stats.update_percentages(fit.class_percentages(system, data.X_test, data.y_test, data.classes, 1,
-                                                           select_i=[top]))
+                                                           hosts_i=[top]))
 
-        # Save the graph
+        # Create/save graphs
         if not TESTING:
-            if ((env.graph_save_step is not None) and (i % env.graph_save_step == 0)) or (i == env.generations - 1):
+            if (env.graph_save_step is not None and ((i % env.graph_save_step == 0)) or (i == env.generations - 1)):
                 graph.make_graphs(graph_iter, env, data, stats, system.pop, system.hosts, system.root_hosts())
-            if ((env.json_save_step is not None) and (i % env.json_save_step == 0)) or (i == env.generations - 1):
+            if (env.json_save_step is not None) and ((i % env.json_save_step == 0) or (i == env.generations - 1)):
                 stats.save_objs(system, data, env)
     print_info(env)
     print("Max fitness: {}, generation {}\nTime: {}".format(stats.max_fitness, stats.max_fitness_gen,
                                                             time.time() - start))
-    return system.pop, system.hosts, stats
+    return system, stats
 
 
 def get_top_prog(pop, results):
@@ -439,21 +434,6 @@ def print_info(env):
                                                                  env.tangled_graphs, env.file_prefix))
 
 
-def init_vm(env, data):
-    vm.init(env.prog_length, const.GEN_REGS, env.num_ipregs, env.output_dims, env.bid_gp, env.tangled_graphs,
-            len(data.X_train), len(data.X_test))
-
-
-def create_system(env):
-    pop = gen_population(env)
-    hosts = gen_hosts(pop, data) if env.bid_gp else None
-    if env.bid_gp and env.tangled_graphs:
-        return systems.GraphSystem(pop, hosts, 1)
-    elif env.bid_gp:
-        return systems.BidSystem(pop, hosts, 0)
-    return systems.System(pop, hosts, 0)
-
-
 # For testing with interpreter - move later
 env = config.Config()
 data = dutil.Data()
@@ -461,16 +441,13 @@ data.load_data(env)
 init_vm(env, data)
 syst = create_system(env)
 
-#@profile
-import cProfile, pstats
+
 def main():
-    data.load_data(env)
-    init_vm(env, data)
-    syst = create_system(env)
+    global syst
     # cProfile.runctx('run_model(data, syst, env)', globals(), locals(), 'Profile.prof')
     # s = pstats.Stats("Profile.prof")
     # s.strip_dirs().sort_stats("time").print_stats()
-    run_model(data, syst, env)
+    syst, stats = run_model(data, syst, env)
 
 
 if __name__ == '__main__':

@@ -1,1 +1,3 @@
-# in_prog
+To compile Cython: 
+
+python setup.py build_ext --inplace

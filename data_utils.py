@@ -178,8 +178,7 @@ class SaveableProg:
             return None
 
         new_prog = Prog(self.prog)
-        new_prog.class_label = self.class_label
-        new_prog.atomic_action = self.atomic_action
+        new_prog.action = [self.atomic_action, self.class_label]
         return new_prog
 
 
@@ -214,7 +213,7 @@ class SaveableSystem:
         System.hosts = self.hosts
         for i, p in enumerate(self.pop):
             self.pop[i] = p.convert_to_prog()
-        system = self.cl(self.pop, np.asarray(self.hosts), self.cl == systems.GraphSystem)
+        system = self.cl(self.pop, np.asarray(self.hosts))
         return system
 
 
@@ -225,6 +224,9 @@ def get_host_class_percs(system, data, results):
         percs.append(fit.class_percentages(system, data.X_test, data.y_test, data.classes, 1,
                                            array('i', [system.root_hosts()[ind]]),
                                            array('i', range(len(data.X_test)))))
+    for perc in percs:
+
+        print(perc)
     return percs
 
 

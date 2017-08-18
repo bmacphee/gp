@@ -4,7 +4,6 @@ import cythondir.vm as vm
 import data_utils as dutil
 import fitness as fit
 import gp, config, utils, systems
-from sklearn.metrics import accuracy_score
 from importlib import reload
 from array import array
 
@@ -67,7 +66,7 @@ def strlabeldata(data):
 def pop():
     progs = [[0], [0], [0], [1]], [[0], [0], [1], [0]], [[0], [0], [2], [0]]
     p = [vm.Prog(i) for i in progs]
-    p[0].class_label, p[1].class_label, p[2].class_label = 1, 2, 3
+    p[0].action, p[1].action, p[2].action = [1, 1], [1, 2], [1, 3]
     return p
 
 
@@ -86,6 +85,8 @@ def system(env, pop, hosts):
     syst = gp.create_system(env)
     return syst
 
+
+# Most of these need to be redone to work with new structure
 def test_load_data():
     d = gp.load_data(TEST_DATA)
     assert len(d) == len(EXPECTED_X)
@@ -126,7 +127,7 @@ def test_split_data():
 
 def test_set_classes(env, data):
     expected_lens = [2, 2, 3, 3]
-    expected_cl = util.get_classes(EXPECTED_Y)
+    expected_cl = utils.get_classes(EXPECTED_Y)
     expected_yvals = [expected_cl[label] for label in EXPECTED_Y]
     expected_vals = [
         [EXPECTED_X[9], EXPECTED_X[8]],
@@ -134,9 +135,7 @@ def test_set_classes(env, data):
         [EXPECTED_X[5], EXPECTED_X[4], EXPECTED_X[3]],
         [EXPECTED_X[2], EXPECTED_X[1], EXPECTED_X[0]]
     ]
-
     # data.classes = gp.get_classes(EXPECTED_Y)
-
     assert data.data_by_classes == {}
     data.X_train = EXPECTED_X
     data.y_train = EXPECTED_Y
@@ -485,7 +484,7 @@ def test_graph_host_y_pred(env):
     pop = []
     for i, p in enumerate(progs):
         prog = vm.Prog(p)
-        prog.class_label = i + 1
+        prog.action = [1, i + 1]
         pop.append(prog)
 
     pop = np.array(pop)
@@ -499,16 +498,16 @@ def test_graph_host_y_pred(env):
     for i in range(len(hosts)):
         assert y_pred[i] == pop[i].class_label
 
-    pop[0].atomic_action = 0
+    pop[0].action = [0, pop[0].class_label]
     host_i = host_i[:1]
     y_pred = vm.host_y_pred(pop, hosts, ip, x_inds, 0, 0, host_i)
     assert y_pred[0] == pop[1].class_label
 
-    pop[1].atomic_action = 0
+    pop[1].action = [0, pop[1].class_label]
     y_pred = vm.host_y_pred(pop, hosts, ip, x_inds, 0, 0, host_i)
     assert y_pred[0] == pop[2].class_label
 
-    pop[0].atomic_action = 1
+    pop[0].action = [1, pop[0].class_label]
     y_pred = vm.host_y_pred(pop, hosts, ip, x_inds, 0, 0, host_i)
     assert y_pred[0] == pop[0].class_label
 
@@ -516,8 +515,10 @@ def test_graph_host_y_pred(env):
 def mock_pop(*args):
     return pop
 
+
 def mock_hosts(*args):
     return hosts
+
 
 def test_root_hosts(env, system, data):
     pop_len = len(system.pop)
@@ -531,7 +532,7 @@ def test_root_hosts(env, system, data):
     assert system.root_hosts() == [0, 1, 2, 3]
 
     new_host = system.hosts[0].copy()
-    gp.prob_check = lambda x: True
+    utils.prob_check = lambda x: True
     gp.copy_change_bid = lambda *x: x[0].copy()
     gp.ops.one_prog_recombination = lambda *x: None
     gp.ops.mutation = lambda *x: None
@@ -560,20 +561,20 @@ def test_stored_vals(env, system, data):
     ip_train0 = np.array([[3.0, 2.0, 1.0]])
     ip_train1 = np.array([[6.0, 5.0, 4.0]])
     inds0 = array('i', range(len(ip_train0)))
-    inds1= array('i', range(len(ip_train0), len(ip_train0)+len(ip_train1)))
+    inds1 = array('i', range(len(ip_train0), len(ip_train0) + len(ip_train1)))
     ip_test0 = np.array([[1.0, 2.0, 3.0]])
     ip_test1 = np.array([[4.0, 5.0, 6.0]])
     vm.init(1, 8, 3, 1, 1, 1, 1, 1)
-    inputs = [ip_train0, ip_train1, ip_test0, ip_test1]*2
-    inds = [inds0, inds1]*4
-    train_test_vals = [0, 0, 1, 1]*2
-    expected = [4, 7, 2, 5]*2
+    inputs = [ip_train0, ip_train1, ip_test0, ip_test1] * 2
+    inds = [inds0, inds1] * 4
+    train_test_vals = [0, 0, 1, 1] * 2
+    expected = [4, 7, 2, 5] * 2
     for i, input in enumerate(inputs):
         result = vm.host_y_pred(np.asarray(system.pop), hosts, input, inds[i], train_test_vals[i], 0, host_inds)
-        if i < int(len(inputs)/2):
+        if i < int(len(inputs) / 2):
             assert system.pop[0].get_regs()[0] == expected[i]
         else:
-            assert system.pop[0].get_regs()[0] == expected[int(len(inputs)/2)-1]
+            assert system.pop[0].get_regs()[0] == expected[int(len(inputs) / 2) - 1]
         assert result[0] == system.pop[0].class_label
 
 
@@ -582,7 +583,7 @@ def test_num_refs(env, system, data):
         assert h.num_refs == 0
     for i, p in enumerate(system.pop):
         assert p.atomic_action == 1
-        assert p.class_label == i+1
+        assert p.class_label == i + 1
 
     system.pop[0].atomic_action = 0
     assert system.hosts[1].num_refs == 1
@@ -603,14 +604,14 @@ def test_num_refs(env, system, data):
     assert system.hosts[2].num_refs == 1
 
 
-def test_is_duplicate(env):
-    vm.init(8, 3, 1, 1)  # 8 gen regs, 3 ip regs, 1 out dims, 1 bid, 1 trainsize
-    progs = [[0], [0], [0], [1]]  # Target: 0 (gen regs), Source: 0 (ip), Op: +
-    ip = np.array([[1.0, 1.0, 1.0]])
-    prog = vm.Prog(progs)
-    pop = np.asarray(prog)
-    hosts = np.asarray(vm.Host())
-    hosts[0].set_progs(array('i', [0]))
-    x_inds = np.asarray([0])
-
-    vm.host_y_pred(pop, hosts, )
+# def test_is_duplicate(env):
+#     vm.init(8, 3, 1, 1)  # 8 gen regs, 3 ip regs, 1 out dims, 1 bid, 1 trainsize
+#     progs = [[0], [0], [0], [1]]  # Target: 0 (gen regs), Source: 0 (ip), Op: +
+#     ip = np.array([[1.0, 1.0, 1.0]])
+#     prog = vm.Prog(progs)
+#     pop = np.asarray(prog)
+#     hosts = np.asarray(vm.Host())
+#     hosts[0].set_progs(array('i', [0]))
+#     x_inds = np.asarray([0])
+#
+#     pass

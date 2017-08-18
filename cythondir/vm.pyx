@@ -203,7 +203,7 @@ cdef class Prog:
             DTYPE_I_t[::1] op_col = self.prog[op_i]
 
         if self.effective_instrs.size == 0:
-            self.effective_instrs = findintrons(target_col, source_col, mode_col)
+            self.effective_instrs = find_introns(target_col, source_col, mode_col)
         cdef DTYPE_I_t i, ip_len = len(ip), s = len(self.effective_instrs)
 
         # Can use threading at a later point w/ nogil functions
@@ -279,7 +279,7 @@ cpdef np.ndarray[DTYPE_I_t, ndim=2] y_pred(Prog[:] progs, np.ndarray[DTYPE_D_t, 
 
 cpdef np.ndarray[DTYPE_I_t, ndim=2] host_y_pred(Prog[:] pop, Host[:] hosts, np.ndarray[DTYPE_D_t, ndim=2] X,
                                                 int[:] x_inds, int traintest, int change_regs, int[:] host_inds):
-    global tangled_graphs
+    global tangled_graphs, curr_ypred_state
     cdef:
         DTYPE_I_t curr_y_pred, num_hosts = len(host_inds), num_ex = len(X), x_ind, set_max = 0, curr_i = 0
         np.ndarray[DTYPE_I_t, ndim=2] all_y_pred = np.empty((num_hosts, num_ex), dtype=DTYPE_I)
@@ -358,6 +358,9 @@ cpdef np.ndarray[DTYPE_I_t, ndim=2] host_y_pred(Prog[:] pop, Host[:] hosts, np.n
             y_pred[j] = curr_y_pred
             free(traversed)
         all_y_pred[:, i] = y_pred[:]
+
+    if traintest == 0:
+        curr_ypred_state = all_y_pred
     return all_y_pred
 
 
@@ -412,7 +415,6 @@ cpdef DTYPE_D_t avg_detect_rate(int[:] y, int[:] y_pred) except -1:
 
 cpdef array.array fitness_sharing(Prog[:] pop, np.ndarray[DTYPE_D_t, ndim=2] X, int[:] y, Host[:] hosts, int[:] x_inds,
                                   int[:] host_inds):
-    global curr_ypred_state
     cdef:
         size_t i, j, k
         DTYPE_I_t len_y = len(y), len_pop, len_row, init_fitness = 1, curr_y, last_row = 0
@@ -430,7 +432,6 @@ cpdef array.array fitness_sharing(Prog[:] pop, np.ndarray[DTYPE_D_t, ndim=2] X, 
         all_y_pred = host_y_pred(pop, hosts, X, x_inds, 0, 1, host_inds)
         len_pop = len(host_inds)
 
-    curr_ypred_state = all_y_pred
     row = < DTYPE_I_t * > malloc(sizeof(DTYPE_I_t) * len_pop * len_y)
     col = < DTYPE_I_t * > malloc(sizeof(DTYPE_I_t) * len_pop * len_y)
     fitness = array.array('d', [0.0]*len_pop)

@@ -9,13 +9,13 @@ Fitness evaluation functions
 '''
 
 
-def fitness_results(traintest, system, X, y, fitness_eval, data_i=None, hosts_i=None):
-    if fitness_eval.__name__ == 'fitness_sharing':
-        results = fitness_sharing(system, X, y, data_i, hosts_i)
-    else:
-        all_y_pred = system.y_pred(X, traintest=traintest, hosts_i=hosts_i, data_i=data_i)
-        results = [fitness_eval(y, all_y_pred[i]) for i in range(len(all_y_pred))]
-    return results
+# def fitness_results(traintest, system, X, y, fitness_eval, data_i=None, hosts_i=None):
+#     if fitness_eval.__name__ == 'fitness_sharing':
+#         results = fitness_sharing(system, X, y, data_i, hosts_i)
+#     else:
+#         all_y_pred = system.y_pred(X, traintest=traintest, hosts_i=hosts_i, data_i=data_i, training=training)
+#         results = [fitness_eval(y, all_y_pred[i]) for i in range(len(all_y_pred))]
+#     return results
 
 
 def accuracy(prog, y, y_pred, hosts=None):
@@ -69,9 +69,9 @@ def cumulative_detect_rate(data, pop, hosts, trainset_with_testfit, hosts_i=None
         y_pred = vm.host_y_pred(pop, curr_hosts, data.X_test, data_i, 1, 0, array('i', hosts_i))
     else:
         y_pred = vm.y_pred(pop, data.X_test).base
-    detect_rates = []
     ranked = utils.get_ranked_index(trainset_with_testfit)
     top = y_pred[ranked[-1]]
+    detect_rates = []
 
     while len(ranked) > 0:
         addition = y_pred[ranked.pop()]

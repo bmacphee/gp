@@ -4,10 +4,17 @@ TARGET = 0
 SOURCE = 1
 OP = 2
 MODE = 3
+
 TOURNAMENT_SIZE = 4
 GEN_REGS = 8
+
+GENREGS_MODE_VAL = 0
+IP_MODE_VAL = 1
+
+
 IMAGE_DIR = '/home/selene/Documents/results'
 JSON_DIR = '/home/selene/Documents/results/JSON'
+GRAPHINFO_DIR = '/home/selene/Documents/results/graphing/results'
 
 TEST_DATA_FILES = {
     'data/ann-train.data': 'data/ann-test.data',
@@ -24,7 +31,8 @@ MNIST_DATA_FILES = {
     'X_train': 'data/mnist_xtrain_standardized.gz',
     'X_test': 'data/mnist_xtest_standardized.gz',
     'y_train': 'data/mnist_ytrain.gz',
-    'y_test': 'data/mnist_ytest.gz'
+    'y_test': 'data/mnist_ytest.gz',
+    'all': 'data/MNIST',
 }
 
 FILE_NAMES = {

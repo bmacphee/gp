@@ -2,6 +2,7 @@ import random, sys, time, numpy as np, pdb
 import const, config, graph, utils, cythondir.vm as vm, var_ops as ops, fitness as fit, data_utils as dutil, systems
 from importlib import reload
 from array import array
+np.core.arrayprint._line_width=120
 
 TESTING = 0
 
@@ -197,13 +198,14 @@ def host_breeder(data, env, system, fitness_eval):
 
     none_vals = np.where(system.hosts == np.array(None))[0]
     num_none_vals = none_vals.size
-    new_hosts = make_hosts(system, num_none_vals, last_X)
+    new_hosts = make_hosts(system, num_none_vals)
+    modify_symbionts(system, new_hosts, last_X, env.action_change_probs)
+
     for i in range(len(new_hosts)):
         try:
             new_hosts[i].index_num = none_vals[i]
         except IndexError:
             pdb.set_trace()
-
     utils.set_arr(none_vals, system.hosts, new_hosts)
 
     for i in range(len(system.hosts)):
@@ -243,7 +245,6 @@ def clear_inactive_progs(system, min_size, max_size):
     nonzero = np.nonzero(system.pop)[0]
     prog_ids = array('i', [-1] * len(nonzero))
     for i, j in enumerate(nonzero):
-        # if system.pop[i] is not None:
         prog_ids[i] = system.pop[j].prog_id
 
     for host in system.curr_hosts():
@@ -261,7 +262,7 @@ def find_unused_symbionts(system):
 
 
 # @profile
-def make_hosts(system, num_new, X):
+def make_hosts(system, num_new):
     new_hosts = [h.copy() for h in np.random.choice(system.curr_hosts(), num_new)]
     for host in new_hosts:
         i = 1
@@ -283,12 +284,11 @@ def make_hosts(system, num_new, X):
             else:
                 break
         host.set_progs(array('i', curr_progs))
-    modify_symbionts(system, new_hosts, X)
     return new_hosts
 
 
 # @profile
-def modify_symbionts(system, new_hosts, X):
+def modify_symbionts(system, new_hosts, X, action_change_probs):
     unused_i = [i for i in range(len(system.pop)) if system.pop[i] is None]
     for host in new_hosts:
         changed = 0
@@ -299,24 +299,25 @@ def modify_symbionts(system, new_hosts, X):
                 if utils.prob_check(env.prob_modify):
                     symb = system.pop[i]
                     new = copy_change_bid(symb, system, X)
+
                     # Test to change action
                     atomic_action = 1
+                    new_label = symb.class_label
                     if utils.prob_check(env.prob_change_action):
                         # Check if host programs have atomic actions
                         if isinstance(system, systems.GraphSystem):
                             atomic_exists = [system.pop[i].atomic_action for i in progs]
-                            if (atomic_exists.count(1) > 1) and utils.prob_check(0.5):
+                            if (atomic_exists.count(1) > 1) and utils.prob_check(action_change_probs[0]):
                                 atomic_action = 0
-                        try:
-                            if atomic_action == 1:
-                                new_label = np.random.choice(
-                                    [cl for cl in data.classes.values() if cl != new.class_label])
-                            else:
-                                # Note: this is only selecting from already present hosts
-                                new_label = np.random.choice([h.index_num for h in system.curr_hosts()])
-                            new.action = [atomic_action, new_label]
-                        except:
-                            pdb.set_trace()
+
+                        if (atomic_action == 1) and utils.prob_check(action_change_probs[1]):
+                            new_label = np.random.choice(
+                                [cl for cl in data.classes.values() if cl != new.class_label])
+                        elif atomic_action == 0:
+                            # Note: this is only selecting from already present hosts
+                            new_label = np.random.choice([h.index_num for h in system.curr_hosts()])
+                        new.action = [atomic_action, new_label]
+
 
                     new_index = unused_i.pop()
                     system.pop[new_index] = new
@@ -379,23 +380,23 @@ def run_model(data, system, env):
         # Run train/test fitness evaluations for data to be graphed
         if (i % env.graph_step == 0) or (i == (env.generations - 1)):
             graph_iter += 1
+
             # Get top training fitness on training data
             if env.to_graph['top_trainfit_in_trainset'] or (env.train_fitness == env.test_fitness):
                 trainset_with_trainfit = system.trainset_fitness_results(X, y, env.train_fitness, data_i=X_ind)
                 stats.update_trainfit_trainset(trainset_with_trainfit)
 
-            # Get top testing fitness on training data
-            if (env.train_fitness == env.test_fitness):
+            # Get top testing fitness on training
+            if (env.train_fitness == env.test_fitness) and not env.use_validation:
                 trainset_with_testfit = trainset_with_trainfit
             else:
                 if env.use_validation:
                     X, y, X_ind = env.subset_sampling(data, env.validation_size)
                     if i == 0:
                         data.act_valid_size = len(X)
-
                 trainset_with_testfit = system.trainset_fitness_results(X, y, env.test_fitness, data_i=X_ind)
-                stats.update_testfit_trainset(trainset_with_testfit)
 
+            stats.update_testfit_trainset(trainset_with_testfit)
             # Get testing fitness on testing data, using the host/program with max testing fitness on the training data
             testset_with_testfit = system.testset_fitness_results(data.X_test, data.y_test, env.test_fitness,
                                                                   trainset_with_testfit)

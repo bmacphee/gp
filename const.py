@@ -11,22 +11,28 @@ GEN_REGS = 8
 GENREGS_MODE_VAL = 0
 IP_MODE_VAL = 1
 
+PT_FITNESS = 1
 
 IMAGE_DIR = '/home/selene/Documents/results'
 JSON_DIR = '/home/selene/Documents/results/JSON'
-GRAPHINFO_DIR = '/home/selene/Documents/results/graphing/results'
+GRAPHINFO_DIR = '/home/selene/Documents/results/graph_input'
+INDEX_DIR = '/home/selene/Documents/results/indexed'
+# IMAGE_DIR = '/mnt/c/Users/S/results'
+# JSON_DIR = '/mnt/c/Users/S/results/JSON'
+# GRAPHINFO_DIR = '/mnt/c/Users/S/results/graphing_input'
+# INDEX_DIR = '/mnt/c/Users/S/results/indexed'
+
+BID_DIFF = 0.0001   # eventually move this to config?
 
 TEST_DATA_FILES = {
     'data/ann-train.data': 'data/ann-test.data',
     'data/shuttle.trn': 'data/shuttle.tst',
     'data/MNIST/train-images.idx3-ubyte': 'data/MNIST/t10k-images.idx3-ubyte',
-    'data/gisette_train.data': 'data/gisette_test.data'
+    'data/gisette_train.data': 'data/gisette_test.data',
+    'data/SVHN/svhn_train_grayscale.mat': 'data/SVHN/svhn_test_grayscale.mat',
+    'data/test/train' : 'data/test/test'
 }
 
-LABEL_FILES = {
-    'data/gisette_train.data': 'data/gisette_train.labels',
-    'data/gisette_test.data': 'data/gisette_test.labels',
-}
 MNIST_DATA_FILES = {
     'X_train': 'data/mnist_xtrain_standardized.gz',
     'X_test': 'data/mnist_xtest_standardized.gz',
@@ -36,10 +42,10 @@ MNIST_DATA_FILES = {
 }
 
 FILE_NAMES = {
-    'graph_cumulative': '_cumulative_detectrate.png',
-    'graph_fitness': '_fitness.png',
-    'graph_percs': '_classes.png',
-    'graph_teamsize': '_team_size.png',
+    'graph_cumulative': 'cumulative_detectrate.png',
+    'graph_fitness': 'fitness.png',
+    'graph_percs': 'classes.png',
+    'graph_teamsize': 'team_size.png',
 }
 
 OPS = {
@@ -63,6 +69,7 @@ class FitnessEval(Enum):
 class StandardizeMethod(Enum):
     MEAN_VARIANCE = 0
     LINEAR_TRANSFORM = 1
+    MIN_MAX_VAL = 2
 
 
 class Selection(Enum):

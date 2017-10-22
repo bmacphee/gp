@@ -30,7 +30,7 @@ def avg_detect_rate(y_act, y_pred):
     return fitness
 
 
-# @profile
+#@profile
 def fitness_sharing(system, X, y, data_i=None, hosts_i=None):
     if hosts_i is None and system.hosts is not None:
         hosts_i = range(len(system.hosts))
@@ -52,33 +52,40 @@ def class_percentages(system, X, y, classes, train_test, hosts_i=None, data_i=No
     y_pred = system.y_pred(X, traintest=train_test, hosts_i=hosts_i, data_i=data_i)[0]
     for cl in classes:
         cl_results = [i for i in range(len(y)) if y[i] == classes[cl]]
-        perc = sum([1 for i in cl_results if y[i] == y_pred[i]]) / len(cl_results)
+        if cl_results:
+            perc = sum([1 for i in cl_results if y[i] == y_pred[i]]) / len(cl_results)
+        else:
+            perc = 0
         percentages[cl] = perc
     return percentages
 
 
 def cumulative_detect_rate(data, pop, hosts, trainset_with_testfit, hosts_i=None):
     # Move this later - is calculated twice
-    if hosts is not None:
-        if hosts_i is None:
-            curr_hosts = utils.get_nonzero(hosts)
-            hosts_i = array('i', range(len(curr_hosts)))  ## TODO: check this
+    try:
+        if hosts is not None:
+            if hosts_i is None:
+                curr_hosts = utils.get_nonzero(hosts)
+                hosts_i = array('i', range(len(curr_hosts)))  ## TODO: check this
+            else:
+                curr_hosts = hosts
+            data_i = array('i', range(len(data.X_test)))
+            y_pred = vm.host_y_pred(pop, curr_hosts, data.X_test, data_i, 1, 0, array('i', hosts_i)).base
         else:
-            curr_hosts = hosts
-        data_i = array('i', range(len(data.X_test)))
-        y_pred = vm.host_y_pred(pop, curr_hosts, data.X_test, data_i, 1, 0, array('i', hosts_i))
-    else:
-        y_pred = vm.y_pred(pop, data.X_test).base
-    ranked = utils.get_ranked_index(trainset_with_testfit)
-    top = y_pred[ranked[-1]]
-    detect_rates = []
+            y_pred = vm.y_pred(pop, data.X_test).base
+        ranked = utils.get_ranked_index(trainset_with_testfit)
+        top = y_pred[ranked[-1]]
 
-    while len(ranked) > 0:
-        addition = y_pred[ranked.pop()]
-        top[addition == data.y_test] = addition[addition == data.y_test]
-        detect_rate = vm.avg_detect_rate(data.y_test, array('i', top))
-        detect_rates.append(detect_rate)
-        if detect_rate == 1:
-            break
-    detect_rates += [1.0] * (len(ranked))
+        detect_rates = []
+        while len(ranked) > 0:
+            addition = y_pred[ranked.pop()]
+            top[addition == data.y_test] = addition[addition == data.y_test]
+            detect_rate = vm.avg_detect_rate(data.y_test, array('i', top))
+            detect_rates.append(detect_rate)
+            if detect_rate == 1:
+                break
+        detect_rates += [1.0] * (len(ranked))
+
+    except:
+        pdb.set_trace()
     return detect_rates

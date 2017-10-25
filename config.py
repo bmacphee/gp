@@ -18,7 +18,7 @@ class Config(object):
             8: 'data/test/train'
         }
         # SELECT FILE:
-        self.data_file = self.data_files[1]
+        self.data_file = self.data_files[0]
 
         self.ops = array('i', [0, 1, 2, 3, 4, 5, 6, 7])  # Ops [0:+, 1:-, 2:*, 3:/, 4:sin, 5:e, 6:ln, 7:conditional]
         self.pop_size = 160

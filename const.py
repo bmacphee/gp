@@ -13,10 +13,10 @@ IP_MODE_VAL = 1
 
 PT_FITNESS = 1
 
-IMAGE_DIR = '/home/selene/Documents/results'
-JSON_DIR = '/home/selene/Documents/results/JSON'
-GRAPHINFO_DIR = '/home/selene/Documents/results/graph_input'
-INDEX_DIR = '/home/selene/Documents/results/indexed'
+IMAGE_DIR = './results'
+JSON_DIR = './results/JSON'
+GRAPHINFO_DIR = './results/graph_input'
+INDEX_DIR = './results/indexed'
 # IMAGE_DIR = '/mnt/c/Users/S/results'
 # JSON_DIR = '/mnt/c/Users/S/results/JSON'
 # GRAPHINFO_DIR = '/mnt/c/Users/S/results/graphing_input'

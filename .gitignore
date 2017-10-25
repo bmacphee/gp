@@ -1,0 +1,4 @@
+cythondir
+__pycache__
+filegen
+results

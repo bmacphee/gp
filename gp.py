@@ -99,9 +99,9 @@ def gen_hosts(pop, data, env):
         if env.limit_atomic_actions:
             options = np.random.choice(options, size=env.atomic_per_host - 1, replace=False)
             options = np.insert(options, 0, label).tolist()
-            host.atomic_actions_allowed = np.asarray(options, dtype=np.int32)
+            host.atomic_actions_allowed = set(options)
         else:
-            host.atomic_actions_allowed = np.array(classes, dtype=np.int32)
+            host.atomic_actions_allowed = set(classes)
 
         for prog_i in progs[1:]:
             prog = pop[prog_i]

@@ -274,7 +274,7 @@ class SaveableHost:
         else:
             self.progs_i = host.progs_i.base.tolist()
             self.index_num = host.index_num
-            self.atomic_actions_allowed = host.atomic_actions_allowed.base.tolist()
+            self.atomic_actions_allowed = set(host.atomic_actions_allowed)
 
     def convert_to_host(self):
         if self.is_none:
@@ -283,7 +283,7 @@ class SaveableHost:
         new_host = Host()
         new_host.set_progs(array('i', self.progs_i))
         new_host.index_num = self.index_num
-        new_host.atomic_actions_allowed = array('i', self.atomic_actions_allowed)
+        new_host.atomic_actions_allowed = set(self.atomic_actions_allowed)
         return new_host
 
 

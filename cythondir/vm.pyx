@@ -78,7 +78,7 @@ cdef class Host:
         public int index_num
         public int num_refs
         public int num_progs
-        public int[:] atomic_actions_allowed
+        public set atomic_actions_allowed
         array.array active_progs
 
     def __init__(self):
